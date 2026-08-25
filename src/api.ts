@@ -1,4 +1,4 @@
-import type { DashboardState, OnboardProductInput, OnboardingSourceInput, ProductBriefDraft } from "../server/domain.ts";
+import type { AIControlPlane, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, ProductBriefDraft } from "../server/domain.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -19,6 +19,33 @@ export function loadDashboard(): Promise<DashboardState> {
 
 export function refreshSignals(): Promise<DashboardState> {
   return request<DashboardState>("/api/refresh", { method: "POST", body: "{}" });
+}
+
+export function loadAIControlPlane(): Promise<AIControlPlane> {
+  return request<AIControlPlane>("/api/ai/control-plane");
+}
+
+export function discoverAIRuntimes(): Promise<AIControlPlane> {
+  return request<AIControlPlane>("/api/ai/discover", { method: "POST", body: "{}" });
+}
+
+export function saveModelProfile(input: {
+  name?: string;
+  provider: ModelProviderId;
+  model: string;
+  baseUrl: string;
+  apiKey?: string;
+  activate?: boolean;
+}): Promise<AIControlPlane> {
+  return request<AIControlPlane>("/api/ai/profiles", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function activateModelProfile(id: string): Promise<AIControlPlane> {
+  return request<AIControlPlane>(`/api/ai/profiles/${encodeURIComponent(id)}/activate`, { method: "POST", body: "{}" });
+}
+
+export function activateAgentRuntime(runtimeId: string, model = ""): Promise<AIControlPlane> {
+  return request<AIControlPlane>("/api/ai/runtime", { method: "POST", body: JSON.stringify({ runtimeId, model }) });
 }
 
 export function onboardProduct(input: OnboardProductInput): Promise<{ productId: string; dashboard: DashboardState }> {

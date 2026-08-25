@@ -3,10 +3,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, normalize, resolve } from "node:path";
 import { DistributionDatabase } from "./database.ts";
 import { buildProductBrief, ingestSources } from "./ingestion.ts";
+import { AIControlPlaneStore } from "./ai-control-plane.ts";
 import type { OnboardProductInput, OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
 const database = new DistributionDatabase();
+const aiControlPlane = new AIControlPlaneStore(database.dataDirectory);
 const projectRoot = resolve(process.cwd());
 const distDirectory = join(projectRoot, "dist");
 
@@ -64,6 +66,37 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/dashboard") {
       json(response, 200, database.getDashboard());
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/ai/control-plane") {
+      json(response, 200, await aiControlPlane.getPublicState());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ai/discover") {
+      json(response, 200, await aiControlPlane.getPublicState());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ai/profiles") {
+      const body = await readJson(request);
+      json(response, 201, await aiControlPlane.saveModelProfile({
+        id: typeof body.id === "string" ? body.id : undefined,
+        name: typeof body.name === "string" ? body.name : undefined,
+        provider: typeof body.provider === "string" ? body.provider : undefined,
+        model: typeof body.model === "string" ? body.model : undefined,
+        baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : undefined,
+        apiKey: typeof body.apiKey === "string" ? body.apiKey : undefined,
+        activate: body.activate === true,
+      }));
+      return;
+    }
+    const profileMatch = url.pathname.match(/^\/api\/ai\/profiles\/([^/]+)\/activate$/);
+    if (request.method === "POST" && profileMatch) {
+      json(response, 200, await aiControlPlane.activateModelProfile(decodeURIComponent(profileMatch[1])));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ai/runtime") {
+      const body = await readJson(request);
+      json(response, 200, await aiControlPlane.activateRuntime(String(body.runtimeId || ""), typeof body.model === "string" ? body.model : ""));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/refresh") {

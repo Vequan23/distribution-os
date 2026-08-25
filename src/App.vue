@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
-import { decideOpportunity, loadDashboard, onboardProduct, refreshSignals } from "./api.ts";
-import type { DashboardState, OnboardProductInput, Opportunity } from "../server/domain.ts";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { activateAgentRuntime, activateModelProfile, decideOpportunity, discoverAIRuntimes, loadAIControlPlane, loadDashboard, onboardProduct, refreshSignals, saveModelProfile } from "./api.ts";
+import type { AIControlPlane, DashboardState, ModelProviderId, OnboardProductInput, Opportunity } from "../server/domain.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
 
-type View = "command" | "onboarding" | "memory" | "audience" | "campaigns" | "channels" | "journal" | "settings";
+type View = "command" | "onboarding" | "memory" | "audience" | "campaigns" | "channels" | "journal" | "harness" | "settings";
 
 const state = ref<DashboardState | null>(null);
 const view = ref<View>("command");
@@ -14,6 +14,11 @@ const loading = ref(true);
 const actionBusy = ref(false);
 const onboardingBusy = ref(false);
 const error = ref("");
+const ai = ref<AIControlPlane | null>(null);
+const aiBusy = ref(false);
+const aiError = ref("");
+const runtimeModel = ref("");
+const profileForm = reactive({ name: "", provider: "anthropic" as ModelProviderId, model: "", baseUrl: "https://api.anthropic.com/v1", apiKey: "" });
 
 const readyOpportunities = computed(() => state.value?.opportunities.filter((item) => item.status === "ready") ?? []);
 const selected = computed(() => {
@@ -24,6 +29,9 @@ const selected = computed(() => {
     ?? null;
 });
 const approved = computed(() => state.value?.opportunities.filter((item) => item.status === "approved") ?? []);
+const activeRuntime = computed(() => ai.value?.runtimes.find((runtime) => runtime.id === ai.value?.execution.runtimeId) ?? null);
+const activeModelProfile = computed(() => ai.value?.profiles.find((profile) => profile.id === ai.value?.execution.modelProfileId) ?? null);
+const selectedProvider = computed(() => ai.value?.providers.find((provider) => provider.id === profileForm.provider));
 
 watch(selected, (opportunity) => {
   draft.value = opportunity?.draftCopy ?? "";
@@ -39,7 +47,71 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
+  try {
+    ai.value = await loadAIControlPlane();
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : "The AI control plane could not be loaded.";
+  }
 });
+
+function selectProvider(providerId: ModelProviderId): void {
+  profileForm.provider = providerId;
+  const provider = ai.value?.providers.find((item) => item.id === providerId);
+  profileForm.baseUrl = provider?.defaultBaseUrl ?? "";
+  profileForm.name = "";
+  profileForm.model = "";
+  profileForm.apiKey = "";
+}
+
+async function saveProfile(): Promise<void> {
+  aiBusy.value = true;
+  aiError.value = "";
+  try {
+    ai.value = await saveModelProfile({ ...profileForm, activate: true });
+    profileForm.apiKey = "";
+    profileForm.name = "";
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : "The model profile could not be saved.";
+  } finally {
+    aiBusy.value = false;
+  }
+}
+
+async function chooseModelProfile(id: string): Promise<void> {
+  aiBusy.value = true;
+  aiError.value = "";
+  try {
+    ai.value = await activateModelProfile(id);
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : "The model profile could not be activated.";
+  } finally {
+    aiBusy.value = false;
+  }
+}
+
+async function chooseRuntime(id: string): Promise<void> {
+  aiBusy.value = true;
+  aiError.value = "";
+  try {
+    ai.value = await activateAgentRuntime(id, runtimeModel.value);
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : "The agent runtime could not be activated.";
+  } finally {
+    aiBusy.value = false;
+  }
+}
+
+async function discoverRuntimes(): Promise<void> {
+  aiBusy.value = true;
+  aiError.value = "";
+  try {
+    ai.value = await discoverAIRuntimes();
+  } catch (cause) {
+    aiError.value = cause instanceof Error ? cause.message : "Local runtimes could not be inspected.";
+  } finally {
+    aiBusy.value = false;
+  }
+}
 
 async function refresh(): Promise<void> {
   actionBusy.value = true;
@@ -106,7 +178,8 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
   { id: "campaigns", label: "Campaigns", icon: "send", section: "EXECUTE" },
   { id: "channels", label: "Channels", icon: "activity" },
   { id: "journal", label: "Distribution Journal", icon: "book", section: "LEARN" },
-  { id: "settings", label: "Settings", icon: "settings", section: "SYSTEM" },
+  { id: "harness", label: "AI Harness", icon: "sparkle", section: "SYSTEM" },
+  { id: "settings", label: "Settings", icon: "settings" },
 ];
 </script>
 
@@ -121,6 +194,10 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
     >
       <div slot="toolbar" class="toolbar-actions">
         <osx-badge tone="success" size="small" dot>LOCAL-FIRST</osx-badge>
+        <button v-if="ai" class="engine-chip" title="Open AI Harness" @click="view = 'harness'">
+          <osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" size="14"></osx-icon>
+          {{ activeRuntime?.name ?? "AI setup" }}<span v-if="activeModelProfile && ai.execution.runtimeId === 'native'">· {{ activeModelProfile.model }}</span>
+        </button>
         <span v-if="state" class="toolbar-summary">{{ state.metrics.readyMoves }} moves · {{ state.metrics.evidenceItems }} evidence items</span>
         <osx-button v-if="state && !state.onboarding.required" size="small" icon="plus" @click="view = 'onboarding'">Add product</osx-button>
         <osx-button size="small" icon="refresh" :loading="actionBusy" @click="refresh">Reload evidence</osx-button>
@@ -259,6 +336,78 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <li v-for="event in state.products.length ? state.recentEvents : []" :key="event.id"><span class="timeline-dot"></span><time>{{ formatDate(event.occurredAt) }}<small>{{ formatTime(event.occurredAt) }}</small></time><div><strong>{{ event.type.replaceAll('.', ' ') }}</strong><p>{{ event.detail }}</p></div><osx-badge size="small">{{ event.entityType }}</osx-badge></li>
           <osx-empty-state v-if="!state.products.length || !state.recentEvents.length" icon="book" title="The journal is empty">Product onboarding, decisions, executions, and measured outcomes will appear here in chronological order.</osx-empty-state>
         </ol>
+      </main>
+
+      <main v-else-if="state && view === 'harness'" class="workspace-page harness-page">
+        <header class="page-header-with-action">
+          <div><p class="eyebrow">AI EXECUTION CONTROL PLANE</p><h1>Choose who owns the agent loop.</h1><p>Model APIs power the native Distribution-OS harness. Agent runtimes bring their own tools, authentication, session behavior, and model controls.</p></div>
+          <osx-button icon="refresh" :loading="aiBusy" @click="discoverRuntimes">Discover runtimes</osx-button>
+        </header>
+
+        <osx-alert v-if="aiError" tone="danger" title="AI setup needs attention" dismissible @dismiss="aiError = ''">{{ aiError }}</osx-alert>
+        <section v-if="!ai" class="loading-state" aria-live="polite"><osx-spinner label="Inspecting local AI runtimes"></osx-spinner><strong>Inspecting local providers and agent runtimes…</strong></section>
+
+        <section v-if="ai" class="execution-summary">
+          <div class="execution-mark"><osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" size="24"></osx-icon></div>
+          <div><span>ACTIVE EXECUTION PROFILE</span><strong>{{ activeRuntime?.name }}</strong><small v-if="ai.execution.runtimeId === 'native'">{{ activeModelProfile ? `${activeModelProfile.name} · ${activeModelProfile.model}` : "Add a model profile to enable AI-backed analysis." }}</small><small v-else>{{ ai.execution.runtimeModel || "The runtime's default model" }} · authentication managed by {{ activeRuntime?.name }}</small></div>
+          <osx-badge :tone="activeRuntime?.available && (ai.execution.runtimeId !== 'native' || activeModelProfile?.readiness === 'ready') ? 'success' : 'warning'" dot>{{ activeRuntime?.available && (ai.execution.runtimeId !== 'native' || activeModelProfile?.readiness === 'ready') ? "Ready" : "Setup required" }}</osx-badge>
+        </section>
+
+        <section class="ownership-grid" aria-label="AI execution ownership">
+          <article><osx-icon name="sparkle" size="22"></osx-icon><div><h2>Model APIs</h2><p>Distribution-OS owns planning, bounded tools, product memory, approvals, retries, and outcome learning. The provider supplies inference only.</p></div></article>
+          <article><osx-icon name="terminal" size="22"></osx-icon><div><h2>Agent runtimes</h2><p>Claude Code, Cursor, OpenCode, or Codex own their internal agent loop. Distribution-OS supplies the task, evidence, policy, and records the result.</p></div></article>
+        </section>
+
+        <section v-if="ai" class="harness-section">
+          <div class="section-heading">
+            <div><p class="eyebrow">AGENT RUNTIMES</p><h2>Use an installed coding agent as the execution engine</h2><p>Discovery checks this machine. Missing or unauthenticated runtimes cannot be selected.</p></div>
+            <span>Last checked {{ formatTime(ai.generatedAt) }}</span>
+          </div>
+          <div class="runtime-grid">
+            <article v-for="runtime in ai.runtimes" :key="runtime.id" :class="['runtime-card', { selected: ai.execution.runtimeId === runtime.id, unavailable: !runtime.available }]">
+              <header><span class="runtime-icon"><osx-icon :name="runtime.id === 'native' ? 'sparkle' : 'terminal'" size="20"></osx-icon></span><div><h3>{{ runtime.name }}</h3><small>{{ runtime.version || (runtime.id === 'native' ? 'Built in' : runtime.command) }}</small></div><osx-badge :tone="runtime.availability === 'available' ? 'success' : runtime.availability === 'setup-required' ? 'warning' : 'neutral'" size="small" dot>{{ runtime.availability.replace('-', ' ') }}</osx-badge></header>
+              <p>{{ runtime.detail }}</p>
+              <ul><li v-for="capability in runtime.capabilities" :key="capability"><osx-icon name="check" size="13"></osx-icon>{{ capability }}</li></ul>
+              <label v-if="runtime.id !== 'native' && runtime.ownsModelSelection && ai.execution.runtimeId === runtime.id">Runtime model override <input v-model="runtimeModel" placeholder="Optional — use runtime default" /></label>
+              <footer><span>{{ runtime.ownsModelSelection ? "Runtime owns model selection" : "Uses the active model profile" }}</span><osx-button size="small" :variant="ai.execution.runtimeId === runtime.id ? 'secondary' : 'primary'" :disabled="!runtime.available || aiBusy || ai.execution.runtimeId === runtime.id" @click="chooseRuntime(runtime.id)">{{ ai.execution.runtimeId === runtime.id ? "Active" : "Use runtime" }}</osx-button></footer>
+            </article>
+          </div>
+        </section>
+
+        <section v-if="ai" class="harness-section">
+          <div class="section-heading">
+            <div><p class="eyebrow">MODEL APIS</p><h2>Profiles for the native harness</h2><p>Secrets are read from provider environment variables or saved to {{ ai.secureStorage }}. They are never written to the distribution ledger.</p></div>
+            <osx-badge>{{ ai.profiles.length }} profile{{ ai.profiles.length === 1 ? "" : "s" }}</osx-badge>
+          </div>
+
+          <div class="provider-layout">
+            <div class="provider-list" role="list" aria-label="Model providers">
+              <button v-for="provider in ai.providers" :key="provider.id" :class="{ active: profileForm.provider === provider.id }" @click="selectProvider(provider.id)">
+                <span><strong>{{ provider.name }}</strong><small>{{ provider.category }}</small></span><osx-icon name="chevron-right" size="16"></osx-icon>
+              </button>
+            </div>
+            <form class="provider-form" @submit.prevent="saveProfile">
+              <div class="provider-form-heading"><div><h3>{{ selectedProvider?.name }}</h3><p>{{ selectedProvider?.description }}</p></div><osx-badge>{{ selectedProvider?.category }}</osx-badge></div>
+              <div class="provider-form-grid">
+                <label>Profile name <input v-model="profileForm.name" placeholder="Optional label" /></label>
+                <label>Model ID <input v-model="profileForm.model" required placeholder="Provider model identifier" /></label>
+                <label class="wide">Base URL <input v-model="profileForm.baseUrl" required inputmode="url" /></label>
+                <label v-if="profileForm.provider !== 'ollama'" class="wide">API key <input v-model="profileForm.apiKey" type="password" autocomplete="off" :placeholder="selectedProvider?.environmentVariables.length ? `Optional if ${selectedProvider.environmentVariables.join(' or ')} is set` : 'Stored securely'" /><small>Leave blank to use an environment variable. A supplied key is saved only to {{ ai.secureStorage }}.</small></label>
+              </div>
+              <footer><span>Saving activates this profile and switches execution to Distribution-OS Native.</span><osx-button type="submit" variant="primary" icon="plus" :loading="aiBusy">Save & use profile</osx-button></footer>
+            </form>
+          </div>
+
+          <div v-if="ai.profiles.length" class="profile-list">
+            <article v-for="profile in ai.profiles" :key="profile.id" :class="{ active: ai.execution.runtimeId === 'native' && ai.execution.modelProfileId === profile.id }">
+              <span class="provider-monogram">{{ profile.provider.charAt(0).toUpperCase() }}</span>
+              <div><strong>{{ profile.name }}</strong><small>{{ profile.provider }} · {{ profile.model }} · {{ profile.credentialSource }}</small></div>
+              <osx-badge :tone="profile.readiness === 'ready' ? 'success' : 'warning'" size="small" dot>{{ profile.readiness.replaceAll('-', ' ') }}</osx-badge>
+              <osx-button size="small" :disabled="profile.readiness !== 'ready' || aiBusy || (ai.execution.runtimeId === 'native' && ai.execution.modelProfileId === profile.id)" @click="chooseModelProfile(profile.id)">{{ ai.execution.runtimeId === 'native' && ai.execution.modelProfileId === profile.id ? "Active" : "Use profile" }}</osx-button>
+            </article>
+          </div>
+          <osx-empty-state v-else icon="sparkle" title="No model profiles configured">The deterministic local analyzer still works. Add a provider when you want model-backed research, synthesis, and agent execution.</osx-empty-state>
+        </section>
       </main>
 
       <main v-else-if="state && view === 'settings'" class="workspace-page">

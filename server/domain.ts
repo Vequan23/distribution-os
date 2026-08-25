@@ -2,6 +2,57 @@ export type ChannelMode = "draft" | "approval" | "autopilot";
 export type OpportunityStatus = "ready" | "approved" | "skipped" | "published";
 export type OnboardingSourceType = "text" | "url" | "document" | "repository";
 export type EvidenceClassification = "intent" | "public-claim" | "implementation" | "outcome";
+export type ModelProviderId = "openai" | "anthropic" | "google" | "deepseek" | "openrouter" | "groq" | "ollama" | "openai-compatible";
+export type AgentRuntimeId = "native" | "claude-code" | "cursor" | "opencode" | "codex";
+export type RuntimeAvailability = "available" | "setup-required" | "missing";
+
+export interface ProviderCatalogEntry {
+  id: ModelProviderId;
+  name: string;
+  category: "Direct" | "Gateway" | "Local" | "Advanced";
+  description: string;
+  defaultBaseUrl: string;
+  environmentVariables: string[];
+}
+
+export interface ModelProfile {
+  id: string;
+  name: string;
+  provider: ModelProviderId;
+  model: string;
+  baseUrl: string;
+  credentialSource: "environment" | "keychain" | "none";
+  credentialConfigured: boolean;
+  readiness: "ready" | "needs-model" | "needs-credential";
+}
+
+export interface AgentRuntimeStatus {
+  id: AgentRuntimeId;
+  name: string;
+  command: string;
+  available: boolean;
+  availability: RuntimeAvailability;
+  version?: string;
+  detail: string;
+  ownsModelSelection: boolean;
+  capabilities: string[];
+}
+
+export interface AIExecutionProfile {
+  runtimeId: AgentRuntimeId;
+  modelProfileId: string | null;
+  runtimeModel: string;
+  updatedAt: string;
+}
+
+export interface AIControlPlane {
+  generatedAt: string;
+  secureStorage: "macOS Keychain" | "environment variables";
+  providers: ProviderCatalogEntry[];
+  profiles: ModelProfile[];
+  runtimes: AgentRuntimeStatus[];
+  execution: AIExecutionProfile;
+}
 
 export interface Product {
   id: string;
