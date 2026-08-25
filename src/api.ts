@@ -1,4 +1,4 @@
-import type { DashboardState, OnboardProductInput } from "../server/domain.ts";
+import type { DashboardState, OnboardProductInput, OnboardingSourceInput, ProductBriefDraft } from "../server/domain.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -25,6 +25,13 @@ export function onboardProduct(input: OnboardProductInput): Promise<{ productId:
   return request<{ productId: string; dashboard: DashboardState }>("/api/products/onboard", {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export function analyzeProduct(sources: OnboardingSourceInput[]): Promise<{ brief: ProductBriefDraft }> {
+  return request<{ brief: ProductBriefDraft }>("/api/products/analyze", {
+    method: "POST",
+    body: JSON.stringify({ sources }),
   });
 }
 

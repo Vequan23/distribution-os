@@ -2,7 +2,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { DistributionDatabase } from "./database.ts";
-import { ingestSources } from "./ingestion.ts";
+import { buildProductBrief, ingestSources } from "./ingestion.ts";
 import type { OnboardProductInput, OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
@@ -87,6 +87,12 @@ const server = createServer(async (request, response) => {
       const sources = await ingestSources(input.sources);
       const productId = database.onboardProduct(input, sources);
       json(response, 201, { productId, dashboard: database.getDashboard() });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/products/analyze") {
+      const body = await readJson(request);
+      const sources = await ingestSources(Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : []);
+      json(response, 200, { brief: buildProductBrief(sources) });
       return;
     }
     const decisionMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/decision$/);

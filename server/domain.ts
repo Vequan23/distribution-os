@@ -71,6 +71,28 @@ export interface IngestedSource {
   confidence: number;
 }
 
+export interface ProductBriefField {
+  value: string;
+  confidence: number;
+  sourceLabels: string[];
+  needsReview: boolean;
+}
+
+export interface ProductBriefDraft {
+  name: ProductBriefField;
+  description: ProductBriefField;
+  audience: ProductBriefField;
+  positioning: ProductBriefField;
+  stage: string;
+  suggestedObjectives: string[];
+  overallConfidence: number;
+  sourceCount: number;
+  evidenceClasses: Array<{
+    classification: EvidenceClassification;
+    count: number;
+  }>;
+}
+
 export interface Opportunity {
   id: string;
   productId: string;

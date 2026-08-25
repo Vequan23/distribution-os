@@ -6,6 +6,8 @@ import type {
   EvidenceClassification,
   IngestedSource,
   OnboardingSourceInput,
+  ProductBriefDraft,
+  ProductBriefField,
 } from "./domain.ts";
 
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
@@ -117,6 +119,20 @@ function repositoryFiles(root: string): string[] {
 }
 
 function ingestRepository(source: OnboardingSourceInput): IngestedSource {
+  if (source.contentBase64) {
+    const buffer = Buffer.from(source.contentBase64, "base64");
+    if (buffer.byteLength > 4 * 1024 * 1024) throw new Error("Repository imports must be 4 MB or smaller after filtering.");
+    const { summary, excerpt } = summarize(buffer.toString("utf8"));
+    return {
+      type: "repository",
+      label: source.label || source.filename || "Selected repository",
+      sourceUrl: "",
+      summary: `${summary} Imported through the bounded repository folder chooser.`,
+      excerpt,
+      classification: "implementation",
+      confidence: 82,
+    };
+  }
   const root = resolve(String(source.value || "").trim());
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error("The repository folder could not be found.");
   const files = repositoryFiles(root);
@@ -182,4 +198,80 @@ export async function ingestSources(sources: OnboardingSourceInput[]): Promise<I
     else ingested.push(ingestText(source));
   }
   return ingested;
+}
+
+function displayName(value: string): string {
+  return value
+    .replace(/\.(pdf|docx?|mdx?|txt|json|ya?ml|html?)$/i, "")
+    .split(/\s+[|—–]\s+|\s+-\s+/)[0]
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+    .trim()
+    .slice(0, 100);
+}
+
+function field(value: string, confidence: number, sourceLabels: string[], needsReview = false): ProductBriefField {
+  return { value: value.trim(), confidence, sourceLabels: [...new Set(sourceLabels)], needsReview };
+}
+
+function packageValue(body: string, key: string): string {
+  return body.match(new RegExp(`(?:\"|')${key}(?:\"|')\\s*:\\s*(?:\"|')([^\"']{2,240})(?:\"|')`, "i"))?.[1]?.trim() || "";
+}
+
+function audienceCandidate(body: string): string {
+  const patterns = [
+    /(?:built|designed|created)\s+for\s+([^.!?]{8,120})/i,
+    /helps?\s+([^.!?]{8,100}?)\s+(?:to\s+)?(?:build|create|manage|understand|turn|find|ship|grow|automate|improve)/i,
+    /for\s+([^.!?]{8,100}?)\s+who\s+/i,
+  ];
+  for (const pattern of patterns) {
+    const candidate = body.match(pattern)?.[1]?.replace(/\s+/g, " ").trim();
+    if (candidate) return candidate;
+  }
+  return "Needs founder confirmation";
+}
+
+export function buildProductBrief(sources: IngestedSource[]): ProductBriefDraft {
+  if (!sources.length) throw new Error("A product brief needs at least one readable source.");
+  const repository = sources.find((source) => source.type === "repository");
+  const publicSource = sources.find((source) => source.type === "url");
+  const primary = repository || publicSource || sources[0];
+  const body = sources.map((source) => `${source.label}\n${source.excerpt}`).join("\n\n");
+
+  const packageName = packageValue(body, "name");
+  const nameValue = displayName(packageName || primary.label) || "Untitled product";
+  const nameSources = packageName ? sources.filter((source) => source.excerpt.includes(packageName)).map((source) => source.label) : [primary.label];
+  const name = field(nameValue, packageName ? 90 : repository ? 76 : 58, nameSources, !packageName && !repository);
+
+  const packageDescription = packageValue(body, "description");
+  const descriptionValue = packageDescription || primary.summary.replace(/\s+(Scanned|Imported through).*$/i, "");
+  const description = field(descriptionValue.slice(0, 420), packageDescription ? 86 : sources.length > 1 ? 67 : 52, [primary.label], !packageDescription);
+
+  const audienceValue = audienceCandidate(body);
+  const audience = field(audienceValue, audienceValue === "Needs founder confirmation" ? 18 : 54, sources.map((source) => source.label), true);
+  const positioningValue = audienceValue === "Needs founder confirmation"
+    ? `${nameValue} — ${descriptionValue}`
+    : `For ${audienceValue}, ${nameValue} makes the described outcome easier to achieve.`;
+  const positioning = field(positioningValue.slice(0, 420), 36, [primary.label], true);
+
+  const evidenceCounts = new Map<EvidenceClassification, number>();
+  for (const source of sources) evidenceCounts.set(source.classification, (evidenceCounts.get(source.classification) || 0) + 1);
+  const overallConfidence = Math.round((name.confidence + description.confidence + audience.confidence + positioning.confidence) / 4);
+  const hasImplementation = sources.some((source) => source.classification === "implementation");
+
+  return {
+    name,
+    description,
+    audience,
+    positioning,
+    stage: hasImplementation ? "early" : "idea",
+    suggestedObjectives: [
+      "Find the first 20 active users",
+      "Validate positioning with 10 qualified conversations",
+      "Earn 100 qualified visits from one durable channel",
+    ],
+    overallConfidence,
+    sourceCount: sources.length,
+    evidenceClasses: [...evidenceCounts].map(([classification, count]) => ({ classification, count })),
+  };
 }

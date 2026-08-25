@@ -55,15 +55,16 @@ The local database defaults to `~/.distribution-os/distribution-os.sqlite`. Set 
 
 ## Onboard a product
 
-Start the app and choose **Add Product**. A product can begin with code, but does not require it. Supported sources are:
+Start the app and choose **Add Product**. Onboarding is source-first: users provide whatever evidence exists, Distribution-OS drafts a cited product brief, and the founder corrects the interpretation before choosing an objective. A product can begin with code, but does not require it. Supported sources are:
 
 - Pasted PRDs, pitches, prompts, and product notes
 - Public product, documentation, and marketplace URLs
-- Local repository folders (bounded scan of documentation and project manifests)
+- Local repository folders through a folder chooser (bounded scan of documentation and project manifests)
+- Absolute repository paths as an advanced local-service option
 - PDF and DOCX documents
 - Markdown, text, JSON, YAML, and HTML files
 
-Distribution-OS does not treat those sources as interchangeable. Documents establish intent, public URLs establish public claims, and repositories establish implementation evidence. The first confidence score is derived from source coverage and corroboration rather than a model assertion.
+Distribution-OS does not treat those sources as interchangeable. Documents establish intent, public URLs establish public claims, and repositories establish implementation evidence. Generated brief fields retain source labels and per-field confidence. Low-confidence audience and positioning fields remain explicitly marked for founder review. The first confidence score is derived from source coverage and corroboration rather than a model assertion.
 
 No channel is connected and nothing is published during onboarding.
 

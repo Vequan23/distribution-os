@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ingestSources } from "../server/ingestion.ts";
+import { buildProductBrief, ingestSources } from "../server/ingestion.ts";
 
 test("onboarding distinguishes founder context from repository implementation evidence", async () => {
   const directory = mkdtempSync(join(tmpdir(), "distribution-os-source-"));
@@ -22,4 +22,30 @@ test("onboarding distinguishes founder context from repository implementation ev
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("repository folder bundles generate an editable, source-cited product brief", async () => {
+  const repositoryBundle = Buffer.from(`
+--- signal-garden/package.json ---
+{"name":"signal-garden","description":"An evidence-backed distribution workspace built for independent technical founders."}
+--- signal-garden/README.md ---
+# Signal Garden
+Signal Garden helps independent technical founders turn product evidence into measurable distribution experiments.
+  `).toString("base64");
+
+  const sources = await ingestSources([{
+    type: "repository",
+    label: "signal-garden",
+    filename: "signal-garden-repository.txt",
+    mimeType: "text/plain",
+    contentBase64: repositoryBundle,
+  }]);
+  const brief = buildProductBrief(sources);
+
+  assert.equal(sources[0]?.classification, "implementation");
+  assert.equal(brief.name.value, "Signal Garden");
+  assert.match(brief.description.value, /evidence-backed distribution/i);
+  assert.match(brief.audience.value, /independent technical founders/i);
+  assert.equal(brief.stage, "early");
+  assert.ok(brief.name.sourceLabels.includes("signal-garden"));
 });
