@@ -194,6 +194,12 @@ input, textarea, select { font-size: 13px; }
 .channel-card dl div { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #33464e; font-size: 12px; }
 .channel-card dt { color: #83969f; }.channel-card dd { margin: 0; color: #cedae0; text-transform: capitalize; }
 .channel-card footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.channel-policy-form { display: grid; grid-template-columns: minmax(0, 1fr) 110px; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #344750; }
+.channel-policy-form label { display: grid; gap: 6px; color: #9fb0b8; font-size: 12px; }
+.channel-policy-form select, .channel-policy-form input { width: 100%; min-height: 34px; padding: 6px 9px; border: 1px solid #415761; border-radius: 6px; color: #e6eef2; background: #101a1f; font: inherit; }
+.channel-policy-form > small { grid-column: 1 / -1; color: #7f939c; line-height: 1.45; }
+.channel-policy-form footer { grid-column: 1 / -1; justify-content: flex-end; }
+.global-alert { margin: 16px 26px 0; }
 .data-panel { overflow: hidden; }
 .campaign-row { display: grid; grid-template-columns: 12px minmax(0,1fr) auto auto; gap: 12px; align-items: center; padding: 13px 15px; border-bottom: 1px solid #34454d; }
 .status-orb, .timeline-dot { width: 9px; height: 9px; border-radius: 50%; background: #45ad63; box-shadow: 0 0 0 1px #257c3f; }

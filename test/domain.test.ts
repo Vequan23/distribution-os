@@ -56,6 +56,16 @@ test("local database starts honestly and persists an evidence-backed onboarding"
     assert.match(approved?.draftCopy ?? "", /Edited by the founder/);
     assert.equal(updated.metrics.approvedMoves, 1);
     assert.match(updated.recentEvents[0]?.type ?? "", /opportunity\.approve/);
+
+    database.updateChannelPolicy("linkedin", { mode: "draft", dailyLimit: 3 });
+    const configuredChannel = database.getDashboard().channels.find((channel) => channel.id === "linkedin");
+    assert.equal(configuredChannel?.mode, "draft");
+    assert.equal(configuredChannel?.dailyLimit, 3);
+    assert.throws(() => database.updateChannelPolicy("linkedin", { mode: "autopilot", dailyLimit: 101 }), /between 0 and 100/i);
+    assert.throws(() => database.onboardProduct({
+      name: "Bad stage", description: "Invalid stage test", stage: "growing" as never, audience: "Testers", objective: "Reject bad stages", positioning: "",
+      sources: [],
+    }, [{ type: "text", label: "Brief", sourceUrl: "", summary: "A valid source for an invalid product stage.", excerpt: "A valid source for an invalid product stage.", classification: "intent", confidence: 52 }]), /supported product stage/i);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

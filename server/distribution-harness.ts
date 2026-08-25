@@ -1,10 +1,11 @@
 import { isStepCount, Output, tool, ToolLoopAgent } from "ai";
 import { z } from "zod";
 import type { DistributionDatabase } from "./database.ts";
-import type { DistributionPlan, DistributionPlanMove } from "./domain.ts";
+import type { DistributionPlan, DistributionPlanMove, PlanApplication } from "./domain.ts";
 import type { AIControlPlaneStore } from "./ai-control-plane.ts";
 import type { NativeModelExecutor } from "./model-executor.ts";
 import type { AgentRuntimeExecutor } from "./runtime-executor.ts";
+import { safeHarnessFailure } from "./safe-errors.ts";
 
 export const planSchema = z.object({
   summary: z.string().min(20).max(700),
@@ -24,9 +25,16 @@ export const planSchema = z.object({
   })).min(1).max(5),
 });
 
-function localFallbackPlan(database: DistributionDatabase, productId: string, runId: string, warning: string): DistributionPlan {
+export const REQUIRED_PLANNING_TOOLS = ["readProductMemory", "readProductEvidence", "readAudienceSignals", "readChannelPolicies", "readOutcomeMemory"] as const;
+
+export function missingRequiredPlanningTools(toolNames: Iterable<string>): string[] {
+  const called = new Set(toolNames);
+  return REQUIRED_PLANNING_TOOLS.filter((name) => !called.has(name));
+}
+
+export function localFallbackPlan(database: DistributionDatabase, productId: string, runId: string, warning: string): DistributionPlan {
   const { product, evidence } = database.getProductContext(productId);
-  const primary = evidence[0];
+  const primary = evidence.find((item) => item.kind !== "audience-signal");
   const audienceSignal = evidence.find((item) => item.kind === "audience-signal");
   if (!primary) throw new Error("A distribution plan requires product evidence.");
   const move: DistributionPlanMove = {
@@ -36,7 +44,7 @@ function localFallbackPlan(database: DistributionDatabase, productId: string, ru
     whyNow: audienceSignal ? `A founder-supplied audience signal provides a concrete conversation to respond to: ${audienceSignal.summary}` : "The product brief is approved, but its problem statement has not yet been tested with the intended audience.",
     suggestedAngle: product.positioning || `Describe the problem ${product.name} addresses and ask the audience where the framing is incomplete.`,
     draftCopy: `${product.name} is being built for ${product.audience}.\n\n${product.description}\n\nThe next question is simple: ${product.objective}.\n\nWhat part of this problem is most costly or frustrating today?`,
-    citationLabels: audienceSignal ? [primary.title, audienceSignal.title] : [primary.title],
+    citationLabels: [...new Set(audienceSignal ? [primary.title, audienceSignal.title] : [primary.title])],
     relevanceScore: Math.max(55, product.confidence), valueScore: 76, freshnessScore: 80, promotionRisk: 24,
   };
   return {
@@ -60,7 +68,7 @@ export async function generateDistributionPlan(
   runtimeExecutor: AgentRuntimeExecutor,
   controlPlane: AIControlPlaneStore,
   database: DistributionDatabase,
-): Promise<DistributionPlan> {
+): Promise<{ plan: DistributionPlan; application: PlanApplication }> {
   const execution = await controlPlane.getExecutionProfile();
   const active = execution.runtimeId === "native" ? await executor.activeLanguageModel() : null;
   const runId = database.beginHarnessRun({ kind: "distribution-plan", productId, runtimeId: execution.runtimeId, provider: active?.provider, model: active?.model || execution.runtimeModel || "runtime default" });
@@ -87,29 +95,30 @@ export async function generateDistributionPlan(
         ].join(" "),
       });
       const evidenceLabels = new Set(context.evidence.map((item) => item.title));
-      const moves = runtimeResult.output.moves.map((move) => ({ ...move, citationLabels: move.citationLabels.filter((label) => evidenceLabels.has(label)) })).filter((move) => move.citationLabels.length > 0);
+      const productLabels = new Set(productEvidence.map((item) => item.title));
+      const moves = runtimeResult.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label)));
       if (!moves.length) throw new Error("The runtime did not return any source-cited distribution moves.");
       const plan: DistributionPlan = { runId, productId, summary: runtimeResult.output.summary, assumptions: runtimeResult.output.assumptions, moves, mode: "ai", warning: "" };
       database.finishHarnessStep(planStep, "completed", `${runtimeResult.runtimeId} completed ${runtimeResult.activityCount} activity event${runtimeResult.activityCount === 1 ? "" : "s"} in ${runtimeResult.durationMs}ms after ${runtimeResult.attempts} attempt${runtimeResult.attempts === 1 ? "" : "s"} and returned ${moves.length} cited move${moves.length === 1 ? "" : "s"}.`);
-      const inserted = database.applyDistributionPlan(plan);
-      database.finishHarnessRun(runId, "completed", `${inserted} new cited move${inserted === 1 ? "" : "s"} added to the review queue.`);
-      return plan;
+      const application = database.applyDistributionPlan(plan);
+      database.finishHarnessRun(runId, "completed", `${application.insertedCount} new cited move${application.insertedCount === 1 ? "" : "s"} added to the review queue.`);
+      return { plan, application };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      database.finishHarnessStep(planStep, "failed", message.slice(0, 500));
-      const fallback = localFallbackPlan(database, productId, runId, `${execution.runtimeId} planning failed: ${message}`);
-      database.applyDistributionPlan(fallback);
+      const failure = safeHarnessFailure(error, execution.runtimeId);
+      database.finishHarnessStep(planStep, "failed", failure.message);
+      const fallback = localFallbackPlan(database, productId, runId, `${failure.message} A conservative local plan was used instead.`);
+      const application = database.applyDistributionPlan(fallback);
       database.finishHarnessRun(runId, "fallback", fallback.summary, fallback.warning.slice(0, 1_000));
-      return fallback;
+      return { plan: fallback, application };
     }
   }
 
   if (!active) {
     const fallback = localFallbackPlan(database, productId, runId, "No ready native model profile was selected.");
-    database.applyDistributionPlan(fallback);
+    const application = database.applyDistributionPlan(fallback);
     database.finishHarnessStep(planStep, "skipped", fallback.warning);
     database.finishHarnessRun(runId, "fallback", fallback.summary, fallback.warning);
-    return fallback;
+    return { plan: fallback, application };
   }
 
   const agent = new ToolLoopAgent({
@@ -119,7 +128,7 @@ export async function generateDistributionPlan(
       "Use the available read-only tools before producing a plan.",
       "Return at most three high-leverage moves. Contribution and useful learning beat reach.",
       "Do not invent trends, conversations, customer demand, metrics, testimonials, or external signals.",
-      "Every move must cite exact evidence title labels returned by readProductEvidence.",
+      "Every move must cite at least one exact product evidence title returned by readProductEvidence. Claims based on audience observations may additionally cite exact labels from readAudienceSignals.",
       "Respect channel policy. Public execution always remains a separate human approval step.",
       "Drafts should sound direct and human, avoid hype, and expose uncertainty honestly.",
     ].join(" "),
@@ -152,12 +161,21 @@ export async function generateDistributionPlan(
     },
     output: Output.object({ schema: planSchema }),
     stopWhen: isStepCount(10),
+    prepareStep: ({ stepNumber }) => {
+      const toolName = REQUIRED_PLANNING_TOOLS[stepNumber];
+      return toolName
+        ? { activeTools: [toolName], toolChoice: { type: "tool" as const, toolName } }
+        : { toolChoice: "none" as const };
+    },
   });
 
   try {
     const result = await agent.generate({ prompt: `Build the next distribution plan for product ${productId}. Read product memory, evidence, audience signals, channel policies, and outcome memory before deciding.` });
+    const missingTools = missingRequiredPlanningTools(result.toolCalls.map((call) => call.toolName));
+    if (missingTools.length) throw new Error(`Required planning tools were not called: ${missingTools.join(", ")}`);
     const evidenceLabels = new Set(context.evidence.map((item) => item.title));
-    const moves = result.output.moves.map((move) => ({ ...move, citationLabels: move.citationLabels.filter((label) => evidenceLabels.has(label)) })).filter((move) => move.citationLabels.length > 0);
+    const productLabels = new Set(productEvidence.map((item) => item.title));
+    const moves = result.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label)));
     if (!moves.length) throw new Error("The agent did not return any source-cited distribution moves.");
     const plan: DistributionPlan = { runId, productId, summary: result.output.summary, assumptions: result.output.assumptions, moves, mode: "ai", warning: "" };
     const steps = result.steps as Array<{ toolCalls?: Array<{ toolName?: string }>; toolResults?: unknown[]; text?: string }>;
@@ -168,15 +186,15 @@ export async function generateDistributionPlan(
       const id = database.beginHarnessStep(runId, index + 2, `Tool output: ${toolNames.join(", ")}`, `${step.toolResults?.length || 0} result${step.toolResults?.length === 1 ? "" : "s"} returned to the next model step.`);
       database.finishHarnessStep(id, "completed", `${toolNames.join(", ")} output was chained into the agent context.`);
     });
-    const inserted = database.applyDistributionPlan(plan);
-    database.finishHarnessRun(runId, "completed", `${inserted} new cited move${inserted === 1 ? "" : "s"} added to the review queue.`);
-    return plan;
+    const application = database.applyDistributionPlan(plan);
+    database.finishHarnessRun(runId, "completed", `${application.insertedCount} new cited move${application.insertedCount === 1 ? "" : "s"} added to the review queue.`);
+    return { plan, application };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    database.finishHarnessStep(planStep, "failed", message.slice(0, 500));
-    const fallback = localFallbackPlan(database, productId, runId, `AI planning failed: ${message}`);
-    database.applyDistributionPlan(fallback);
+    const failure = safeHarnessFailure(error, "The native planning agent");
+    database.finishHarnessStep(planStep, "failed", failure.message);
+    const fallback = localFallbackPlan(database, productId, runId, `${failure.message} A conservative local plan was used instead.`);
+    const application = database.applyDistributionPlan(fallback);
     database.finishHarnessRun(runId, "fallback", fallback.summary, fallback.warning.slice(0, 1_000));
-    return fallback;
+    return { plan: fallback, application };
   }
 }

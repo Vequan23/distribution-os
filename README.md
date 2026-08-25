@@ -1,77 +1,115 @@
 # Distribution-OS
 
-Distribution-OS is a local-first AI harness that turns product evidence into a governed distribution practice: understand the product, propose a small number of source-cited moves, require a human decision, and learn from measured outcomes.
+**A local-first, evidence-grounded distribution harness for technical founders.**
 
-It is built for technical founders who want consistent distribution without becoming spammers. It is not a bulk outreach engine, a fake-trend generator, or a social scheduler wearing an AI label.
+[![Quality](https://github.com/Vequan23/distribution-os/actions/workflows/quality.yml/badge.svg)](https://github.com/Vequan23/distribution-os/actions/workflows/quality.yml)
+[![Node.js 22.12+](https://img.shields.io/badge/Node.js-22.12%2B-43853d)](https://nodejs.org/)
+[![Vue 3](https://img.shields.io/badge/Vue-3-42b883)](https://vuejs.org/)
 
-## The loop
+Distribution-OS turns product evidence into a repeatable distribution practice: understand the product, propose a small number of source-cited moves, require a human decision, and learn from measured outcomes.
 
-```text
-evidence → cited product memory → agent plan → editable draft
-         → human approval → manual execution → measured outcome
-         └────────────────────── learning memory ─────────────┘
+It is built for founders who want consistent distribution without becoming spammers. It is not a bulk outreach engine, a fake-trend generator, or an autonomous social publisher wearing an AI label.
+
+## The idea
+
+Building software is getting cheaper. Earning qualified attention is not.
+
+Most distribution tools optimize one channel or make it easier to send more messages. Distribution-OS treats go-to-market as a closed loop with memory, evidence, policy, and human judgment:
+
+```mermaid
+flowchart LR
+  A["Product sources"] --> B["Cited product memory"]
+  B --> C["Governed agent plan"]
+  C --> D["Editable distribution move"]
+  D --> E{"Human decision"}
+  E -->|Approve| F["Manual execution"]
+  E -->|Skip| G["Decision memory"]
+  F --> H["Measured outcome"]
+  G --> C
+  H --> C
 ```
 
-What works today:
+Every proposed move must answer four questions:
 
-- Onboarding from local repository folders, public URLs, PDF, DOCX, Markdown, text, JSON, YAML, HTML, or pasted context
-- Local deterministic extraction plus optional source-cited AI synthesis
-- Separate evidence classes for intent, public claims, implementation, and outcomes
-- Founder-supplied audience evidence from public discussion URLs or bounded excerpts, kept distinct from verified demand
-- Multi-provider model profiles with Keychain or environment-variable credentials
-- A native `ToolLoopAgent` that reads product memory, evidence, channel policy, and prior outcomes before planning
+1. What product evidence supports this?
+2. Who is it useful to?
+3. Why is this channel appropriate?
+4. What outcome would make the move worth repeating?
+
+## What works today
+
+- Onboarding from a local repository folder, browser folder bundle, public URL, PDF, DOCX, Markdown, text, JSON, YAML, HTML, or pasted context
+- Deterministic local brief extraction that works without an AI account
+- Optional schema-validated, source-cited AI synthesis for product onboarding
+- Separate evidence classes for founder intent, public claims, implementation, audience observations, and outcomes
+- Multi-provider model profiles with environment-variable or macOS Keychain credentials
+- A native Vercel AI SDK `ToolLoopAgent` with an enforced evidence-reading sequence
 - Bounded Claude Code, OpenCode, Codex CLI, and Cursor Agent runtime adapters
-- Schema-validated plans, exact citation checks, one repair attempt, and visible fallback behavior
-- A human review queue with editable drafts, approve/skip decisions, and no implicit publishing
-- A durable run ledger showing steps, runtime/model, tool chaining, failures, and fallbacks
-- Manual outcome capture that feeds the next planning cycle
-- A private SQLite ledger stored outside the repository
-- A Vue interface built with [`osx-components`](https://www.npmjs.com/package/osx-components)
+- Exact citation verification, one bounded repair attempt, and visible fallback behavior
+- Editable review queue with approve and skip decisions; no implicit publishing
+- Per-channel policy and daily-limit configuration
+- Durable run ledger containing safe step metadata, failures, fallbacks, decisions, and outcomes
+- Manual outcome capture that informs the next planning cycle
+- Private SQLite storage outside the product repository
+- Vue 3 interface built with [`osx-components`](https://www.npmjs.com/package/osx-components)
 
 ## Quick start
 
-Requires Node.js 22.12 or later. Node.js 24 LTS is recommended.
+### Requirements
+
+- Node.js 22.12 or later; Node.js 24 LTS is recommended
+- npm
 
 ```bash
+git clone https://github.com/Vequan23/distribution-os.git
+cd distribution-os
 npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:4190`. The Vue app proxies the local service at `http://127.0.0.1:4191`.
+Open [http://127.0.0.1:4190](http://127.0.0.1:4190). The Vite app proxies the local service at `http://127.0.0.1:4191`.
 
-1. Choose **Add Product** and add at least one source.
-2. Generate the product brief. Without a model profile, local extraction remains available and is labeled honestly.
-3. Correct the brief and approve product memory.
-4. Open **AI Harness** to add a model API or select an installed agent runtime.
-5. Add real audience context in **Audience Map** when you have a public discussion or bounded observation worth citing.
-6. Use **Generate plan** from Product Memory or the Command Center.
-7. Edit, approve, or skip every move. Distribution-OS never publishes during this flow.
-8. After manually executing an approved move, record its outcome in Campaigns.
+### Your first loop
 
-Run the quality gate:
+1. Select **Add Product** and provide at least one product source.
+2. Generate and correct the product brief, then approve it as product memory.
+3. Optionally open **AI Harness** to configure a model API or installed agent runtime.
+4. Add real audience context in **Audience Map** when you have a public discussion or bounded observation worth citing.
+5. Select **Generate plan** from Product Memory or the Command Center.
+6. Inspect the evidence, edit the draft, then approve or skip the move.
+7. Execute approved work manually and record the observed outcome in Campaigns.
+8. Generate the next plan with the accumulated decision and outcome memory.
 
-```bash
-npm run check
-```
+> **Note:** Refreshing the workspace reloads local dashboard state. It does not silently re-fetch URLs, repositories, or external audience sources.
 
-For a production-local build:
+## How the harness is governed
 
-```bash
-npm run build
-npm start
-```
+The native agent cannot jump directly from a product summary to a confident recommendation. Before it can finish, Distribution-OS requires and verifies these tool reads in sequence:
 
-## Model APIs and agent runtimes
+1. Product memory
+2. Product evidence
+3. Audience signals
+4. Channel policies
+5. Prior outcome memory
 
-These are intentionally different layers.
+Tool results are fed into subsequent model steps. The final plan is schema-validated, and every move needs at least one citation matching an exact product-evidence label. Audience observations may strengthen a move, but one observation is never promoted into a trend or proof of demand.
 
-**Model APIs** provide inference. The selected API profile powers cited onboarding and the native Distribution-OS harness. Supported profiles include OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, Groq, Ollama, and custom OpenAI-compatible endpoints.
+External runtimes receive bounded JSON evidence in a disposable temporary workspace. Their final output passes through the same schema and citation checks before it can enter the review queue.
 
-**Agent runtimes** own their internal model selection, authentication, and agent behavior. Distribution-OS gives Claude Code, OpenCode, Codex CLI, or Cursor Agent a temporary evidence workspace, blocks repository mutation through read-only modes where supported, validates the returned plan, records the result, and retains the human approval gate.
+See [Harness architecture](docs/ARCHITECTURE.md) for the detailed lifecycle.
 
-The native harness uses the Vercel AI SDK's `ToolLoopAgent`. Tool results are returned to the next model step; the agent cannot finish a plan without source citations that match product evidence.
+## Model APIs versus agent runtimes
 
-Configure credentials through the UI or environment:
+These are intentionally separate layers.
+
+| Layer | What it owns | Supported options |
+| --- | --- | --- |
+| Model API | Inference for cited onboarding and the native Distribution-OS harness | OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, Groq, Ollama, custom OpenAI-compatible endpoints |
+| Agent runtime | Its own model selection, authentication, tools, and internal agent behavior | Claude Code, OpenCode, Codex CLI, Cursor Agent |
+
+Distribution-OS owns the evidence boundary, temporary workspace, plan schema, citation verification, run ledger, and human approval gate. External runtimes continue to own their authentication and tool behavior.
+
+Configure credentials in **AI Harness** or through environment variables:
 
 ```bash
 OPENAI_API_KEY=
@@ -82,25 +120,67 @@ OPENROUTER_API_KEY=
 GROQ_API_KEY=
 ```
 
-Keys entered in the macOS UI are stored in Keychain. They are never written to SQLite, prompts, events, or the repository. Use **Test** on a profile to verify the endpoint before running onboarding or a plan.
+Keys entered through the macOS UI are stored in Keychain. Use **Test** on a profile before running AI onboarding or plan generation. Installed external runtimes must be authenticated through their own CLI.
 
-## Local-first data and privacy
+## Data, privacy, and security
 
 The default data directory is `~/.distribution-os`:
 
-- `distribution-os.sqlite` — products, bounded evidence, drafts, decisions, run metadata, and outcomes
-- `ai-settings.json` — non-secret provider/runtime configuration
-- macOS Keychain — API keys entered through the UI
+| Location | Contents |
+| --- | --- |
+| `distribution-os.sqlite` | Products, bounded evidence, drafts, decisions, safe run metadata, and outcomes |
+| `ai-settings.json` | Non-secret provider and runtime configuration |
+| macOS Keychain | API keys entered through the UI |
 
-Set `DISTRIBUTION_OS_DATA_DIR` to use another location. The run ledger stores step metadata and concise diagnostics, not raw prompts, chain-of-thought, credentials, or full provider responses. External runtimes use disposable temporary workspaces that are removed after each run.
+Set `DISTRIBUTION_OS_DATA_DIR` to use another location.
 
-See [Privacy and trust](docs/PRIVACY.md) and [Harness architecture](docs/ARCHITECTURE.md).
+Local-first does not mean that model inference is magically offline. When you select a hosted provider or external runtime, the bounded evidence required for that operation is sent to that provider/runtime. Deterministic onboarding and SQLite storage remain local. Ollama can be used for a local model path.
 
-## Honest product boundary
+Additional boundaries:
 
-Distribution-OS currently creates evidence-grounded plans and drafts, accepts founder-supplied audience observations, records human decisions, and learns from outcomes you enter. It does **not** yet claim automated community listening, representative trend detection, predictive CAC/LTV, automatic attribution, or autonomous social publishing. Those require authenticated connectors and product analytics; they will remain explicit capabilities rather than simulated signals.
+- Secrets are not written to SQLite, prompts, events, or the repository.
+- The run ledger excludes raw prompts, private chain-of-thought, complete provider transcripts, and raw runtime stderr.
+- Runtime failures are normalized and redacted before persistence.
+- Runtime evidence workspaces are disposable and removed after each run.
+- URL import resolves and pins DNS, rejects private IPv4/IPv6 targets, revalidates redirects, and enforces a streamed size limit.
+- Repository ingestion is bounded and excludes dependency trees, build output, history, and binary files.
+- No current flow publishes publicly or performs an irreversible channel action.
 
-The future managed layer can add always-on monitoring, OAuth connectors, team approvals, scheduling, and outcome ingestion without moving the private product-memory core into the cloud by default.
+Read [Privacy and trust](docs/PRIVACY.md) for the storage contract.
+
+## Current product boundary
+
+Distribution-OS currently creates evidence-grounded plans and drafts, stores founder-supplied audience observations, records human decisions, and learns from outcomes you enter.
+
+It does **not** yet provide:
+
+- Authenticated social or community connectors
+- Autonomous posting or outreach
+- Continuous audience monitoring or representative trend detection
+- Automatic product analytics or revenue attribution
+- Predictive CAC, LTV, or channel economics
+- Cloud sync or collaborative team workspaces
+
+Those capabilities must be connected, observable, and permissioned before the product can claim them. The current release is an early, single-user, local-first harness—not a finished growth automation platform.
+
+## Development
+
+```bash
+# Unit and integration tests
+npm test
+
+# Vue and server type checking
+npm run typecheck
+
+# Tests, type checking, and production builds
+npm run check
+
+# Run the production-local build
+npm run build
+npm start
+```
+
+CI runs `npm run check` on Node.js 24 for every push and pull request.
 
 ## Design principles
 
@@ -109,10 +189,12 @@ The future managed layer can add always-on monitoring, OAuth connectors, team ap
 3. Public identity remains under human control.
 4. Provider inference and harness behavior remain separate.
 5. Failures fall back visibly; they never masquerade as AI success.
-6. The system optimizes for qualified outcomes, not empty impressions.
-7. Memory prevents repetition and makes the next move more informed.
-8. Confidence is calculated from evidence coverage, never model certainty.
+6. Qualified outcomes matter more than empty impressions.
+7. Memory should prevent repetition and improve the next move.
+8. Confidence comes from evidence coverage, never model certainty.
 
 ## Status
 
-Distribution-OS is an early local-first product. The governed evidence-to-outcome loop is usable; managed connectors, background monitoring, and collaborative workspaces are roadmap items.
+Distribution-OS is in active alpha. The governed evidence-to-outcome loop is usable today; managed connectors, background monitoring, and team collaboration remain roadmap work.
+
+If this problem resonates, open an issue with the distribution workflow you wish existed. Concrete founder workflows are more valuable than generic feature requests.

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { AIControlPlaneStore } from "../server/ai-control-plane.ts";
 import { DistributionDatabase } from "../server/database.ts";
-import { planSchema } from "../server/distribution-harness.ts";
+import { generateDistributionPlan, localFallbackPlan, missingRequiredPlanningTools, planSchema } from "../server/distribution-harness.ts";
 import { buildProductBrief } from "../server/ingestion.ts";
 import type { NativeModelExecutor } from "../server/model-executor.ts";
 import { synthesizeProductBrief } from "../server/onboarding-harness.ts";
@@ -51,8 +51,11 @@ test("onboarding AI synthesis accepts only exact evidence labels and records its
         description: { value: "A calmer distribution practice.", citations: ["Founder brief"], needsReview: false },
         audience: { value: "Technical founders", citations: ["Founder brief"], needsReview: false },
         positioning: { value: "Evidence before reach.", citations: ["Invented source"], needsReview: false },
-        stage: "early" as const,
-        suggestedObjectives: ["Earn ten qualified founder replies", "Book three product-learning conversations"],
+        stage: { value: "early" as const, citations: ["Founder brief"], needsReview: false },
+        suggestedObjectives: [
+          { value: "Earn ten qualified founder replies", citations: ["Founder brief"] },
+          { value: "Book three product-learning conversations", citations: ["Founder brief"] },
+        ],
       },
       provider: "openai" as const,
       model: "test-model",
@@ -67,6 +70,7 @@ test("onboarding AI synthesis accepts only exact evidence labels and records its
     assert.equal(brief.analysis.mode, "ai");
     assert.equal(brief.positioning.needsReview, true);
     assert.deepEqual(brief.positioning.sourceLabels, ["Founder brief"]);
+    assert.notEqual(brief.positioning.value, "Evidence before reach.");
     const runs = database.getRecentHarnessRuns();
     assert.equal(runs[0]?.kind, "onboarding");
     assert.equal(runs[0]?.status, "completed");
@@ -130,7 +134,7 @@ test("durable plan and outcome memory close the approval learning loop", () => {
     }]);
     assert.equal(database.getDashboard().audienceSignals[0]?.classification, "audience-signal");
     const runId = database.beginHarnessRun({ kind: "distribution-plan", productId, runtimeId: "native", provider: "test", model: "model" });
-    const inserted = database.applyDistributionPlan({
+    const application = database.applyDistributionPlan({
       runId,
       productId,
       summary: "A cited plan.",
@@ -151,7 +155,8 @@ test("durable plan and outcome memory close the approval learning loop", () => {
         promotionRisk: 10,
       }],
     });
-    assert.equal(inserted, 1);
+    assert.equal(application.insertedCount, 1);
+    assert.equal(application.opportunityIds.length, 1);
     const opportunity = database.getDashboard().opportunities.find((item) => item.title.startsWith("Document the evidence"));
     assert.ok(opportunity);
     database.decideOpportunity(opportunity.id, "approve");
@@ -160,6 +165,49 @@ test("durable plan and outcome memory close the approval learning loop", () => {
     assert.equal(memory[0]?.metric, "qualified-visits");
     assert.equal(memory[0]?.total, 12);
     assert.equal(database.getDashboard().opportunities.find((item) => item.id === opportunity.id)?.status, "published");
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("fallback plans always cite independent product evidence before audience observations", () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-fallback-"));
+  const database = new DistributionDatabase(directory);
+  try {
+    const productId = seedProduct(database);
+    database.addAudienceSignals(productId, [{
+      type: "text", label: "Founder discussion", sourceUrl: "", summary: "Founders asked for calmer distribution workflows.", excerpt: "Founders asked for calmer distribution workflows.", classification: "intent", confidence: 52,
+    }]);
+    const plan = localFallbackPlan(database, productId, "test-run", "Local test");
+    assert.ok(plan.moves[0]?.citationLabels.includes("Founder brief"));
+    assert.ok(plan.moves[0]?.citationLabels.includes("Founder discussion"));
+    assert.equal(new Set(plan.moves[0]?.citationLabels).size, plan.moves[0]?.citationLabels.length);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("required planning tools cannot be skipped silently", () => {
+  assert.deepEqual(missingRequiredPlanningTools(["readProductMemory", "readProductEvidence"]), ["readAudienceSignals", "readChannelPolicies", "readOutcomeMemory"]);
+  assert.deepEqual(missingRequiredPlanningTools(["readProductMemory", "readProductEvidence", "readAudienceSignals", "readChannelPolicies", "readOutcomeMemory"]), []);
+});
+
+test("runtime failures persist only normalized diagnostics", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-private-error-"));
+  const database = new DistributionDatabase(directory);
+  const controlPlane = new AIControlPlaneStore(directory, async () => ({ stdout: "opencode 1.0.0", stderr: "" }));
+  try {
+    const productId = seedProduct(database);
+    await controlPlane.activateRuntime("opencode");
+    const runtimeExecutor = new AgentRuntimeExecutor(controlPlane, async () => {
+      throw new Error("Command failed: private prompt customer@example.com");
+    });
+    const result = await generateDistributionPlan(productId, {} as NativeModelExecutor, runtimeExecutor, controlPlane, database);
+    const persisted = JSON.stringify(database.getHarnessRun(result.plan.runId));
+    assert.doesNotMatch(`${result.plan.warning}\n${persisted}`, /customer@example\.com|private prompt/i);
+    assert.match(result.plan.warning, /failed before producing a reviewable result/i);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

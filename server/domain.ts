@@ -1,4 +1,9 @@
 export type ChannelMode = "draft" | "approval" | "autopilot";
+export const PRODUCT_STAGES = ["idea", "prototype", "early", "public-beta", "launched"] as const;
+export type ProductStage = typeof PRODUCT_STAGES[number];
+export function isProductStage(value: string): value is ProductStage {
+  return (PRODUCT_STAGES as readonly string[]).includes(value);
+}
 export type OpportunityStatus = "ready" | "approved" | "skipped" | "published";
 export type OnboardingSourceType = "text" | "url" | "document" | "repository";
 export type EvidenceClassification = "intent" | "public-claim" | "implementation" | "audience-signal" | "outcome";
@@ -62,7 +67,7 @@ export interface Product {
   id: string;
   name: string;
   description: string;
-  stage: string;
+  stage: ProductStage;
   repositoryUrl: string;
   websiteUrl: string;
   evidenceCount: number;
@@ -81,6 +86,11 @@ export interface Channel {
   status: "connected" | "manual" | "planned";
   dailyLimit: number;
   connected: boolean;
+}
+
+export interface ChannelPolicyInput {
+  mode: ChannelMode;
+  dailyLimit: number;
 }
 
 export interface Evidence {
@@ -112,7 +122,7 @@ export interface OnboardingSourceInput {
 export interface OnboardProductInput {
   name: string;
   description: string;
-  stage: string;
+  stage: ProductStage;
   audience: string;
   objective: string;
   positioning: string;
@@ -143,7 +153,7 @@ export interface ProductBriefDraft {
   description: ProductBriefField;
   audience: ProductBriefField;
   positioning: ProductBriefField;
-  stage: string;
+  stage: ProductStage;
   suggestedObjectives: string[];
   overallConfidence: number;
   sourceCount: number;
@@ -208,6 +218,11 @@ export interface DistributionPlan {
   moves: DistributionPlanMove[];
   mode: AnalysisMode;
   warning: string;
+}
+
+export interface PlanApplication {
+  insertedCount: number;
+  opportunityIds: string[];
 }
 
 export interface Opportunity {

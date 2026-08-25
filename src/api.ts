@@ -1,4 +1,4 @@
-import type { AIControlPlane, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, ProductBriefDraft } from "../server/domain.ts";
+import type { AIControlPlane, ChannelMode, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft } from "../server/domain.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -17,7 +17,7 @@ export function loadDashboard(): Promise<DashboardState> {
   return request<DashboardState>("/api/dashboard");
 }
 
-export function refreshSignals(): Promise<DashboardState> {
+export function refreshWorkspace(): Promise<DashboardState> {
   return request<DashboardState>("/api/refresh", { method: "POST", body: "{}" });
 }
 
@@ -66,10 +66,17 @@ export function analyzeProduct(sources: OnboardingSourceInput[]): Promise<{ brie
   });
 }
 
-export function generateProductPlan(productId: string): Promise<{ plan: DistributionPlan; dashboard: DashboardState }> {
-  return request<{ plan: DistributionPlan; dashboard: DashboardState }>(`/api/products/${encodeURIComponent(productId)}/plan`, {
+export function generateProductPlan(productId: string): Promise<{ plan: DistributionPlan; application: PlanApplication; dashboard: DashboardState }> {
+  return request<{ plan: DistributionPlan; application: PlanApplication; dashboard: DashboardState }>(`/api/products/${encodeURIComponent(productId)}/plan`, {
     method: "POST",
     body: "{}",
+  });
+}
+
+export function updateChannelPolicy(id: string, input: { mode: ChannelMode; dailyLimit: number }): Promise<DashboardState> {
+  return request<DashboardState>(`/api/channels/${encodeURIComponent(id)}/policy`, {
+    method: "PUT",
+    body: JSON.stringify(input),
   });
 }
 

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { DistributionDatabase } from "./database.ts";
-import type { IngestedSource, ProductBriefDraft, ProductBriefField } from "./domain.ts";
+import { PRODUCT_STAGES, type IngestedSource, type ProductBriefDraft, type ProductBriefField } from "./domain.ts";
 import type { NativeModelExecutor } from "./model-executor.ts";
+import { safeHarnessFailure } from "./safe-errors.ts";
 
 const citedField = z.object({
   value: z.string().min(2).max(600),
@@ -9,13 +10,24 @@ const citedField = z.object({
   needsReview: z.boolean(),
 });
 
+const citedStage = z.object({
+  value: z.enum(PRODUCT_STAGES),
+  citations: z.array(z.string().min(1).max(160)).max(8),
+  needsReview: z.boolean(),
+});
+
+const citedObjective = z.object({
+  value: z.string().min(8).max(180),
+  citations: z.array(z.string().min(1).max(160)).max(8),
+});
+
 export const productBriefSynthesisSchema = z.object({
   name: citedField,
   description: citedField,
   audience: citedField,
   positioning: citedField,
-  stage: z.enum(["idea", "early", "growing", "established"]),
-  suggestedObjectives: z.array(z.string().min(8).max(180)).min(2).max(4),
+  stage: citedStage,
+  suggestedObjectives: z.array(citedObjective).min(2).max(4),
 });
 
 type ProductBriefSynthesis = z.infer<typeof productBriefSynthesisSchema>;
@@ -38,11 +50,12 @@ function citedFieldValue(
 ): ProductBriefField {
   const validLabels = [...new Set(generated.citations.filter((label) => labels.has(label)))];
   const grounded = validLabels.length > 0;
+  if (!grounded) return { ...local, sourceLabels: [...local.sourceLabels], needsReview: true };
   return {
     value: generated.value.trim() || local.value,
-    confidence: Math.min(92, Math.max(local.confidence, grounded ? local.confidence + 10 : local.confidence)),
-    sourceLabels: grounded ? validLabels : local.sourceLabels,
-    needsReview: generated.needsReview || !grounded,
+    confidence: Math.min(92, local.confidence + 10),
+    sourceLabels: validLabels,
+    needsReview: generated.needsReview,
   };
 }
 
@@ -65,7 +78,7 @@ export async function synthesizeProductBrief(
       instructions: [
         "You are the product understanding stage of Distribution-OS.",
         "Produce a concise product brief using only the supplied sources.",
-        "Every field must cite one or more source labels exactly as written.",
+        "Every field, the stage, and every suggested objective must cite one or more source labels exactly as written.",
         "Do not turn intent into shipped capability, implementation into customer demand, or public claims into verified outcomes.",
         "Mark fields needsReview when the evidence is ambiguous, aspirational, conflicting, or incomplete.",
         "Objectives must be measurable distribution learning outcomes, not vanity metrics or spam volume.",
@@ -73,14 +86,16 @@ export async function synthesizeProductBrief(
       prompt: `Synthesize a founder-reviewable product brief from this bounded evidence.\n\n${sourcePrompt(sources)}`,
     });
     const labels = new Set(sources.map((source) => source.label));
+    const stageLabels = generation.output.stage.citations.filter((label) => labels.has(label));
+    const citedObjectives = generation.output.suggestedObjectives.filter((objective) => objective.citations.some((label) => labels.has(label)));
     const result: ProductBriefDraft = {
       ...local,
       name: citedFieldValue(generation.output.name, local.name, labels),
       description: citedFieldValue(generation.output.description, local.description, labels),
       audience: citedFieldValue(generation.output.audience, local.audience, labels),
       positioning: citedFieldValue(generation.output.positioning, local.positioning, labels),
-      stage: generation.output.stage,
-      suggestedObjectives: generation.output.suggestedObjectives,
+      stage: stageLabels.length ? generation.output.stage.value : local.stage,
+      suggestedObjectives: citedObjectives.length >= 2 ? citedObjectives.map((objective) => objective.value) : local.suggestedObjectives,
       analysis: { mode: "ai", runId, provider: generation.provider, model: generation.model, warning: "" },
     };
     result.overallConfidence = Math.round((result.name.confidence + result.description.confidence + result.audience.confidence + result.positioning.confidence) / 4);
@@ -91,9 +106,9 @@ export async function synthesizeProductBrief(
     database.finishHarnessRun(runId, "completed", `Cited product brief generated with ${result.overallConfidence}% evidence confidence.`);
     return result;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    database.finishHarnessStep(synthesisStep, "failed", message.slice(0, 500));
-    database.finishHarnessRun(runId, "fallback", "Local extraction returned after AI synthesis failed.", message.slice(0, 1_000));
-    return { ...local, analysis: { mode: "fallback", runId, provider: descriptor.provider, model: descriptor.model, warning: `AI synthesis failed, so Distribution-OS returned the local evidence extraction: ${message}` } };
+    const failure = safeHarnessFailure(error, `${descriptor.provider}/${descriptor.model}`);
+    database.finishHarnessStep(synthesisStep, "failed", failure.message);
+    database.finishHarnessRun(runId, "fallback", "Local extraction returned after AI synthesis failed.", failure.message);
+    return { ...local, analysis: { mode: "fallback", runId, provider: descriptor.provider, model: descriptor.model, warning: `AI synthesis was unavailable, so Distribution-OS returned the local evidence extraction. ${failure.message}` } };
   }
 }

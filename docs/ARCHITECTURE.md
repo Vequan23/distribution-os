@@ -14,7 +14,7 @@ Distribution-OS treats distribution as a governed evidence-to-outcome loop, not 
 
 ## Native loop
 
-The native agent can call only four read tools:
+The native agent can call only five read tools:
 
 - product memory
 - bounded evidence

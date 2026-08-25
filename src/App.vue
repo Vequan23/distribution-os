@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import { activateAgentRuntime, activateModelProfile, addProductAudienceSignals, decideOpportunity, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, recordOpportunityOutcome, refreshSignals, saveModelProfile, testModelProfile } from "./api.ts";
-import type { AIControlPlane, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
+import { activateAgentRuntime, activateModelProfile, addProductAudienceSignals, decideOpportunity, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, recordOpportunityOutcome, refreshWorkspace, saveModelProfile, testModelProfile, updateChannelPolicy } from "./api.ts";
+import type { AIControlPlane, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
 
 type View = "command" | "onboarding" | "memory" | "audience" | "campaigns" | "channels" | "journal" | "harness" | "settings";
@@ -30,6 +30,9 @@ const outcomeForm = reactive({ metric: "qualified-visits", value: 0, note: "" })
 const signalBusy = ref(false);
 const signalNotice = ref<{ tone: "success" | "danger"; title: string; detail: string } | null>(null);
 const signalForm = reactive({ productId: "", type: "text" as "text" | "url", label: "", value: "" });
+const channelEditingId = ref("");
+const channelNotice = ref<{ tone: "success" | "danger"; title: string; detail: string } | null>(null);
+const channelForm = reactive<{ mode: ChannelMode; dailyLimit: number }>({ mode: "approval", dailyLimit: 1 });
 const profileForm = reactive({ name: "", provider: "anthropic" as ModelProviderId, model: "", baseUrl: "https://api.anthropic.com/v1", apiKey: "" });
 
 const readyOpportunities = computed(() => state.value?.opportunities.filter((item) => item.status === "ready") ?? []);
@@ -159,9 +162,9 @@ async function refresh(): Promise<void> {
   actionBusy.value = true;
   error.value = "";
   try {
-    state.value = await refreshSignals();
+    state.value = await refreshWorkspace();
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : "Signals could not be refreshed.";
+    error.value = cause instanceof Error ? cause.message : "The workspace could not be refreshed.";
   } finally {
     actionBusy.value = false;
   }
@@ -221,15 +224,38 @@ async function runDistributionPlan(productId: string): Promise<void> {
   try {
     const result = await generateProductPlan(productId);
     state.value = result.dashboard;
-    selectedId.value = state.value.opportunities.find((item) => item.productId === productId && item.status === "ready")?.id ?? selectedId.value;
-    planNotice.value = result.plan.mode === "ai"
-      ? { tone: "success", title: "Cited distribution plan ready", detail: `${result.plan.moves.length} move${result.plan.moves.length === 1 ? "" : "s"} added for review. Nothing was published.` }
+    selectedId.value = result.application.opportunityIds[0] ?? selectedId.value;
+    planNotice.value = result.plan.mode === "ai" && result.application.insertedCount > 0
+      ? { tone: "success", title: "Cited distribution plan ready", detail: `${result.application.insertedCount} new move${result.application.insertedCount === 1 ? "" : "s"} added for review. Nothing was published.` }
+      : result.application.insertedCount === 0
+        ? { tone: "warning", title: "Plan already represented", detail: `The cited plan matched work already in the queue, so no duplicate move was added.${result.plan.warning ? ` ${result.plan.warning}` : ""}` }
       : { tone: "warning", title: "Local fallback plan ready", detail: result.plan.warning || "A conservative source-based move was generated without model inference." };
     view.value = "command";
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "The distribution plan could not be generated.";
   } finally {
     planBusy.value = false;
+  }
+}
+
+function editChannel(channel: Channel): void {
+  channelEditingId.value = channel.id;
+  channelForm.mode = channel.mode;
+  channelForm.dailyLimit = channel.dailyLimit;
+  channelNotice.value = null;
+}
+
+async function saveChannel(channel: Channel): Promise<void> {
+  actionBusy.value = true;
+  channelNotice.value = null;
+  try {
+    state.value = await updateChannelPolicy(channel.id, channelForm);
+    channelEditingId.value = "";
+    channelNotice.value = { tone: "success", title: `${channel.name} policy saved`, detail: "The next planning run will use this execution mode and daily limit." };
+  } catch (cause) {
+    channelNotice.value = { tone: "danger", title: "Channel policy was not saved", detail: cause instanceof Error ? cause.message : "Review the values and try again." };
+  } finally {
+    actionBusy.value = false;
   }
 }
 
@@ -310,7 +336,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </button>
         <span v-if="state" class="toolbar-summary">{{ state.metrics.readyMoves }} moves · {{ state.metrics.evidenceItems }} evidence items</span>
         <osx-button v-if="state && !state.onboarding.required" size="small" icon="plus" @click="view = 'onboarding'">Add product</osx-button>
-        <osx-button size="small" icon="refresh" :loading="actionBusy" @click="refresh">Reload evidence</osx-button>
+        <osx-button size="small" icon="refresh" :loading="actionBusy" @click="refresh">Refresh workspace</osx-button>
       </div>
 
       <nav slot="sidebar" class="source-list" aria-label="Distribution workspace">
@@ -332,6 +358,8 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <div><strong>Private by default</strong><span>Product memory and drafts remain on this machine.</span></div>
         </section>
       </nav>
+
+      <osx-alert v-if="error && state && view !== 'command' && view !== 'onboarding'" class="global-alert" tone="danger" title="Action needs attention" dismissible @dismiss="error = ''">{{ error }}</osx-alert>
 
       <section v-if="loading" class="loading-state" aria-live="polite">
         <osx-spinner size="large" label="Loading distribution memory"></osx-spinner>
@@ -464,9 +492,16 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <article v-for="channel in state.channels" :key="channel.id" class="channel-card">
             <header><span class="channel-mark">{{ channel.name.charAt(0) }}</span><div><h2>{{ channel.name }}</h2><p>{{ channel.handle }}</p></div><osx-badge :tone="channel.connected ? 'success' : channel.status === 'manual' ? 'warning' : 'neutral'" dot>{{ channel.status }}</osx-badge></header>
             <dl><div><dt>Execution mode</dt><dd>{{ channel.mode }}</dd></div><div><dt>Daily limit</dt><dd>{{ channel.dailyLimit }}</dd></div><div><dt>Reply automation</dt><dd>Approval required</dd></div></dl>
-            <footer><osx-toggle :checked="channel.connected" :disabled="!channel.connected">Connection enabled</osx-toggle><osx-button size="small" icon="settings">Configure</osx-button></footer>
+            <form v-if="channelEditingId === channel.id" class="channel-policy-form" @submit.prevent="saveChannel(channel)">
+              <label>Execution mode<select v-model="channelForm.mode"><option value="draft">Draft only</option><option value="approval">Human approval</option><option value="autopilot">Autopilot within policy</option></select></label>
+              <label>Daily limit<input v-model.number="channelForm.dailyLimit" type="number" min="0" max="100" step="1" /></label>
+              <small>Connection credentials are configured separately. This policy only governs what the harness may propose or execute.</small>
+              <footer><osx-button size="small" @click="channelEditingId = ''">Cancel</osx-button><osx-button type="button" size="small" variant="primary" icon="check" :loading="actionBusy" @click="saveChannel(channel)">Save policy</osx-button></footer>
+            </form>
+            <footer v-else><osx-toggle :checked="channel.connected" disabled>{{ channel.connected ? 'Connection enabled' : 'Not connected' }}</osx-toggle><osx-button size="small" icon="settings" @click="editChannel(channel)">Configure policy</osx-button></footer>
           </article>
         </section>
+        <osx-alert v-if="channelNotice" :tone="channelNotice.tone" :title="channelNotice.title" dismissible @dismiss="channelNotice = null">{{ channelNotice.detail }}</osx-alert>
       </main>
 
       <main v-else-if="state && view === 'journal'" class="workspace-page">
@@ -499,7 +534,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 
         <section v-if="ai" class="harness-section">
           <div class="section-heading">
-            <div><p class="eyebrow">AGENT RUNTIMES</p><h2>Use an installed coding agent as the execution engine</h2><p>Discovery checks this machine. Missing or unauthenticated runtimes cannot be selected.</p></div>
+            <div><p class="eyebrow">AGENT RUNTIMES</p><h2>Use an installed coding agent as the execution engine</h2><p>Discovery verifies installation. Claude authentication is preflighted; other runtimes verify their own authentication when a run starts.</p></div>
             <span>Last checked {{ formatTime(ai.generatedAt) }}</span>
           </div>
           <div class="runtime-grid">

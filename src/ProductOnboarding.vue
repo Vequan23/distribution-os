@@ -7,6 +7,7 @@ import type {
   OnboardingSourceType,
   ProductBriefDraft,
   ProductBriefField,
+  ProductStage,
 } from "../server/domain.ts";
 
 defineProps<{ busy: boolean; error: string }>();
@@ -22,7 +23,16 @@ const localError = ref("");
 const sources = ref<OnboardingSourceInput[]>([]);
 const brief = ref<ProductBriefDraft | null>(null);
 const customObjective = ref(false);
-const form = reactive({
+const form = reactive<{
+  name: string;
+  description: string;
+  stage: ProductStage;
+  audience: string;
+  objective: string;
+  positioning: string;
+  websiteUrl: string;
+  repositoryUrl: string;
+}>({
   name: "",
   description: "",
   stage: "early",
@@ -92,6 +102,9 @@ async function addFiles(event: Event): Promise<void> {
   fileBusy.value = true;
   localError.value = "";
   try {
+    const existingBytes = sources.value.reduce((total, source) => total + (source.contentBase64 ? Math.floor(source.contentBase64.length * 0.75) : 0), 0);
+    const selectedBytes = files.reduce((total, file) => total + file.size, 0);
+    if (existingBytes + selectedBytes > 8 * 1024 * 1024) throw new Error("Combined document uploads must be 8 MB or smaller.");
     for (const file of files) {
       if (file.size > 8 * 1024 * 1024) throw new Error(`${file.name} is larger than 8 MB.`);
       sources.value.push({
@@ -218,7 +231,7 @@ function sourcesFor(field: ProductBriefField): string {
 
     <nav class="onboarding-steps" aria-label="Onboarding progress">
       <button v-for="item in 3" :key="item" :class="{ active: step === item, complete: step > item }" @click="step = item === 1 || brief ? item : step">
-        <span>{{ step > item ? "✓" : item }}</span>
+        <span><osx-icon v-if="step > item" name="check" :size="14"></osx-icon><template v-else>{{ item }}</template></span>
         <strong>{{ item === 1 ? "Product evidence" : item === 2 ? "Generated brief" : "Goal & approval" }}</strong>
       </button>
     </nav>

@@ -114,7 +114,7 @@ export async function inspectRuntime(definition: RuntimeDefinition, runner: Runt
         return { ...definition, available: false, availability: "setup-required", version, detail: "Claude Code is installed, but authentication could not be verified. Run claude auth status." };
       }
     }
-    return { ...definition, available: true, availability: "available", version, detail: `${definition.name} is installed. Authentication and its internal tool loop remain owned by the runtime.` };
+    return { ...definition, available: true, availability: "available", version, detail: `${definition.name} is installed. Authentication is verified by the runtime when a run starts; its internal tool loop remains runtime-owned.` };
   } catch (error) {
     const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
     return {

@@ -1,4 +1,8 @@
+import { lookup } from "node:dns/promises";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP, type LookupFunction } from "node:net";
 import { basename, extname, join, resolve } from "node:path";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
@@ -15,6 +19,16 @@ const MAX_REMOTE_BYTES = 2 * 1024 * 1024;
 const MAX_REPOSITORY_FILES = 30;
 const TEXT_EXTENSIONS = new Set([".md", ".mdx", ".txt", ".json", ".yaml", ".yml", ".toml", ".xml"]);
 const IMPORTANT_FILES = /^(readme|changelog|package|pyproject|cargo|pom|composer|gemfile|requirements|manifest)/i;
+const blockedAddresses = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
+  ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15],
+  ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as Array<[string, number]>) blockedAddresses.addSubnet(network, prefix, "ipv4");
+for (const [network, prefix] of [
+  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["64:ff9b::", 96], ["100::", 64],
+  ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as Array<[string, number]>) blockedAddresses.addSubnet(network, prefix, "ipv6");
 
 function normalizeText(value: string): string {
   return value
@@ -52,13 +66,20 @@ function sourcePolicy(type: OnboardingSourceInput["type"]): {
   return { classification: "intent", confidence: 52 };
 }
 
-function safeRemoteUrl(value: string): URL {
+export function isPrivateAddress(value: string): boolean {
+  const address = value.toLowerCase().replace(/^\[|\]$/g, "");
+  const family = isIP(address);
+  if (!family) return true;
+  return blockedAddresses.check(address, family === 4 ? "ipv4" : "ipv6");
+}
+
+export function safeRemoteUrl(value: string): URL {
   const url = new URL(value);
   if (!(url.protocol === "https:" || url.protocol === "http:")) {
     throw new Error("Only HTTP and HTTPS URLs can be imported.");
   }
   if (url.username || url.password) throw new Error("URLs containing credentials cannot be imported.");
-  const host = url.hostname.toLowerCase();
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (
     host === "localhost"
     || host.endsWith(".local")
@@ -73,23 +94,92 @@ function safeRemoteUrl(value: string): URL {
   return url;
 }
 
+type AddressResolver = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+
+export async function resolvePublicAddress(hostname: string, resolver: AddressResolver = async (host) => lookup(host, { all: true, verbatim: true })): Promise<{ address: string; family: number }> {
+  hostname = hostname.replace(/^\[|\]$/g, "");
+  const literalFamily = isIP(hostname);
+  const addresses = literalFamily ? [{ address: hostname, family: literalFamily }] : await resolver(hostname);
+  if (!addresses.length || addresses.some((entry) => isPrivateAddress(entry.address))) {
+    throw new Error("Private-network URLs cannot be imported.");
+  }
+  return addresses[0];
+}
+
+async function downloadRemote(url: URL, redirects = 0): Promise<{ body: string; finalUrl: URL }> {
+  if (redirects > 4) throw new Error("This web source redirected too many times.");
+  const pinned = await resolvePublicAddress(url.hostname);
+  const client = url.protocol === "https:" ? httpsRequest : httpRequest;
+  const pinnedLookup: LookupFunction = (_hostname, _options, callback) => callback(null, pinned.address, pinned.family);
+  return new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const reject = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      rejectPromise(error);
+    };
+    const request = client(url, {
+      headers: { "user-agent": "Distribution-OS/0.1 product-evidence-importer", accept: "text/html,text/plain,application/json;q=0.8" },
+      lookup: pinnedLookup,
+      servername: url.hostname,
+    }, (response) => {
+      const status = response.statusCode || 0;
+      const location = response.headers.location;
+      if (status >= 300 && status < 400 && location) {
+        response.resume();
+        const redirected = safeRemoteUrl(new URL(location, url).toString());
+        downloadRemote(redirected, redirects + 1).then((value) => {
+          settled = true;
+          resolvePromise(value);
+        }, reject);
+        return;
+      }
+      if (status < 200 || status >= 300) {
+        response.resume();
+        reject(new Error(`Could not read ${url.hostname} (${status}).`));
+        return;
+      }
+      const declaredLength = Number(response.headers["content-length"] || 0);
+      if (declaredLength > MAX_REMOTE_BYTES) {
+        response.destroy();
+        reject(new Error("This web source is larger than 2 MB."));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on("data", (chunk: Buffer | string) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += buffer.byteLength;
+        if (size > MAX_REMOTE_BYTES) {
+          response.destroy();
+          reject(new Error("This web source is larger than 2 MB."));
+          return;
+        }
+        chunks.push(buffer);
+      });
+      response.on("end", () => {
+        if (settled) return;
+        settled = true;
+        resolvePromise({ body: Buffer.concat(chunks).toString("utf8"), finalUrl: url });
+      });
+      response.on("error", (error) => reject(error));
+    });
+    request.setTimeout(15_000, () => request.destroy(new Error("The web source timed out.")));
+    request.on("error", (error) => reject(error));
+    request.end();
+  });
+}
+
 async function ingestUrl(source: OnboardingSourceInput): Promise<IngestedSource> {
   const url = safeRemoteUrl(String(source.value || "").trim());
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(15_000),
-    headers: { "user-agent": "Distribution-OS/0.1 product-evidence-importer" },
-  });
-  if (!response.ok) throw new Error(`Could not read ${url.hostname} (${response.status}).`);
-  const declaredLength = Number(response.headers.get("content-length") || 0);
-  if (declaredLength > MAX_REMOTE_BYTES) throw new Error("This web source is larger than 2 MB.");
-  const html = (await response.text()).slice(0, MAX_REMOTE_BYTES);
+  const { body: html, finalUrl } = await downloadRemote(url);
   const pageTitle = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
   const { summary, excerpt } = summarize(html);
   const policy = sourcePolicy("url");
   return {
     type: "url",
-    label: normalizeText(pageTitle || source.label || url.hostname).slice(0, 160),
-    sourceUrl: url.toString(),
+    label: normalizeText(pageTitle || source.label || finalUrl.hostname).slice(0, 160),
+    sourceUrl: finalUrl.toString(),
     summary,
     excerpt,
     ...policy,

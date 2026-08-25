@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { DistributionDatabase } from "./database.ts";
 import { buildProductBrief, ingestSources } from "./ingestion.ts";
 import { AIControlPlaneStore } from "./ai-control-plane.ts";
@@ -8,7 +8,7 @@ import { NativeModelExecutor } from "./model-executor.ts";
 import { synthesizeProductBrief } from "./onboarding-harness.ts";
 import { generateDistributionPlan } from "./distribution-harness.ts";
 import { AgentRuntimeExecutor } from "./runtime-executor.ts";
-import type { OnboardProductInput, OnboardingSourceInput } from "./domain.ts";
+import { isProductStage, type ChannelMode, type OnboardProductInput, type OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
 const database = new DistributionDatabase();
@@ -39,15 +39,17 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
 }
 
-function serveStatic(pathname: string, response: ServerResponse): boolean {
+function serveStatic(pathname: string, response: ServerResponse, head = false): boolean {
   if (!existsSync(distDirectory)) return false;
   const requested = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const candidate = normalize(join(distDirectory, requested));
-  if (!candidate.startsWith(distDirectory) || !existsSync(candidate) || !statSync(candidate).isFile()) {
+  const relativeCandidate = relative(distDirectory, candidate);
+  if (relativeCandidate.startsWith("..") || isAbsolute(relativeCandidate) || !existsSync(candidate) || !statSync(candidate).isFile()) {
     const fallback = join(distDirectory, "index.html");
     if (!existsSync(fallback)) return false;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    createReadStream(fallback).pipe(response);
+    if (head) response.end();
+    else createReadStream(fallback).pipe(response);
     return true;
   }
   const contentTypes: Record<string, string> = {
@@ -59,7 +61,8 @@ function serveStatic(pathname: string, response: ServerResponse): boolean {
     ".svg": "image/svg+xml",
   };
   response.writeHead(200, { "content-type": contentTypes[extname(candidate)] || "application/octet-stream" });
-  createReadStream(candidate).pipe(response);
+  if (head) response.end();
+  else createReadStream(candidate).pipe(response);
   return true;
 }
 
@@ -121,16 +124,17 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/refresh") {
-      database.recordRefresh();
       json(response, 200, database.getDashboard());
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/products/onboard") {
       const body = await readJson(request);
+      const stage = String(body.stage || "early");
+      if (!isProductStage(stage)) throw new Error("Choose a supported product stage.");
       const input: OnboardProductInput = {
         name: String(body.name || ""),
         description: String(body.description || ""),
-        stage: String(body.stage || "early"),
+        stage,
         audience: String(body.audience || ""),
         objective: String(body.objective || ""),
         positioning: String(body.positioning || ""),
@@ -152,8 +156,18 @@ const server = createServer(async (request, response) => {
     }
     const planMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/plan$/);
     if (request.method === "POST" && planMatch) {
-      const plan = await generateDistributionPlan(decodeURIComponent(planMatch[1]), modelExecutor, runtimeExecutor, aiControlPlane, database);
-      json(response, 201, { plan, dashboard: database.getDashboard() });
+      const result = await generateDistributionPlan(decodeURIComponent(planMatch[1]), modelExecutor, runtimeExecutor, aiControlPlane, database);
+      json(response, 201, { ...result, dashboard: database.getDashboard() });
+      return;
+    }
+    const channelMatch = url.pathname.match(/^\/api\/channels\/([^/]+)\/policy$/);
+    if (request.method === "PUT" && channelMatch) {
+      const body = await readJson(request);
+      database.updateChannelPolicy(decodeURIComponent(channelMatch[1]), {
+        mode: String(body.mode || "") as ChannelMode,
+        dailyLimit: Number(body.dailyLimit),
+      });
+      json(response, 200, database.getDashboard());
       return;
     }
     const signalMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/signals$/);
@@ -199,12 +213,18 @@ const server = createServer(async (request, response) => {
       json(response, 201, database.getDashboard());
       return;
     }
-    if (request.method === "GET" && serveStatic(url.pathname, response)) return;
+    if (url.pathname.startsWith("/api/")) {
+      json(response, 404, { error: "Not found" });
+      return;
+    }
+    if ((request.method === "GET" || request.method === "HEAD") && serveStatic(url.pathname, response, request.method === "HEAD")) return;
     json(response, 404, { error: "Not found" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error";
     console.error("[distribution-os] request failed", { method: request.method, path: request.url, message });
-    json(response, message === "Opportunity not found" ? 404 : 500, { error: message });
+    const missing = /not found$/i.test(message);
+    const invalid = error instanceof SyntaxError || /required|must|choose|supported|cannot|only|private-network|larger than|too many|could not be found/i.test(message);
+    json(response, missing ? 404 : invalid ? 400 : 500, { error: message });
   }
 });
 

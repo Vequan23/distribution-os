@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { buildProductBrief, ingestSources } from "../server/ingestion.ts";
+import { buildProductBrief, ingestSources, isPrivateAddress, resolvePublicAddress, safeRemoteUrl } from "../server/ingestion.ts";
 
 test("onboarding distinguishes founder context from repository implementation evidence", async () => {
   const directory = mkdtempSync(join(tmpdir(), "distribution-os-source-"));
@@ -59,4 +59,18 @@ test("pasted context infers a named product instead of using the generic source 
   const brief = buildProductBrief(sources);
   assert.equal(brief.name.value, "Signal Garden");
   assert.equal(brief.name.needsReview, false);
+});
+
+test("web imports reject direct and DNS-resolved private network targets", async () => {
+  assert.throws(() => safeRemoteUrl("http://127.0.0.1:4190/api/health"), /private-network/i);
+  assert.equal(isPrivateAddress("::ffff:7f00:1"), true);
+  assert.equal(isPrivateAddress("fc00::1"), true);
+  await assert.rejects(
+    resolvePublicAddress("public-looking.example", async () => [{ address: "127.0.0.1", family: 4 }]),
+    /private-network/i,
+  );
+  await assert.rejects(
+    resolvePublicAddress("mixed.example", async () => [{ address: "203.0.113.10", family: 4 }, { address: "10.0.0.2", family: 4 }]),
+    /private-network/i,
+  );
 });
