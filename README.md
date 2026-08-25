@@ -206,6 +206,10 @@ npm run check
 # Run the production-local build
 npm run build
 npm start
+
+# Preview or build the standalone marketing site
+npm run dev:marketing
+npm run build:marketing
 ```
 
 CI runs `npm run check` on Node.js 24 for every push and pull request.

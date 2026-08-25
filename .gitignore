@@ -1,5 +1,6 @@
 node_modules
 dist
+dist-marketing
 dist-server
 .distribution-os
 .env

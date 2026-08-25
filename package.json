@@ -11,8 +11,11 @@
     "dev": "concurrently -k -n service,ui -c cyan,blue \"npm:dev:service\" \"npm:dev:ui\"",
     "dev:service": "node --watch --no-warnings --experimental-strip-types server/index.ts",
     "dev:ui": "vite",
+    "dev:marketing": "vite --config vite.marketing.config.ts",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.server.json",
+    "typecheck:marketing": "vue-tsc --noEmit -p tsconfig.marketing.json",
     "build": "npm run typecheck && tsc -p tsconfig.server.json && vite build",
+    "build:marketing": "npm run typecheck:marketing && vite build --config vite.marketing.config.ts",
     "start": "node --no-warnings dist-server/server/index.js",
     "test": "node --no-warnings --experimental-strip-types --test test/*.test.ts",
     "check": "npm test && npm run build"
