@@ -13,6 +13,50 @@ Distribution-OS treats distribution as a governed evidence-to-outcome loop, not 
 7. **Approve** gives the founder an explicit approve/skip decision. No public side effect exists in this stage.
 8. **Learn** records an observed metric and exposes aggregated outcome memory to the next agent run.
 
+## Automation Kernel
+
+Automation orchestrates the governed stages; it does not replace their boundaries.
+
+An evidence-loop playbook stores a product, schedule, and maximum number of prepared actions per run. A manual or scheduled trigger creates an idempotent durable run in SQLite, then proceeds through four inspectable steps:
+
+1. **Observe** refreshes attached read-only source connectors. New candidates remain quarantined in Signal Inbox.
+2. **Plan** generates no more than the playbook action budget and preserves exact evidence-citation requirements.
+3. **Prepare** writes founder-editable, source-cited contributions for new moves.
+4. **Gate** stops in `waiting-approval`. No connector can cross the public identity boundary.
+
+The run remains linked to the exact opportunities it prepared. Once each receives an approve or skip decision, the automation run closes as completed; restoring a move to review reopens the approval wait.
+
+Schedules and run state survive service restarts. Duplicate trigger keys reuse the existing run, active runs do not overlap, and the global pause control prevents new automated work. If the local service stops mid-cycle, startup recovery closes the interrupted run safely, records that no public action occurred, and returns the playbook to the due schedule. A source failure is visible but does not turn missing observations into fabricated evidence. Empty cycles complete successfully without manufacturing activity.
+
+## Action Fabric
+
+The Action Fabric is a framework-neutral TypeScript package under `packages/action-fabric`. It deliberately does not know about products, campaigns, social networks, or Vue. That makes it usable by Distribution-OS today and extractable into Aperta or future products later.
+
+Every adapter declares:
+
+- transport: direct API, MCP, bounded local CLI, optional managed gateway, or human handoff
+- capabilities: observe, search, read, prepare, execute, and/or measure
+- risk: read-only, private write, identity-bearing, or irreversible
+- approval: none, first use, or every time
+- lifecycle state and whether a public side effect is possible
+
+The host policy always wins. It rejects unknown adapters, undeclared capabilities, missing purpose or idempotency keys, invalid/exhausted budgets, and preparation/execution without evidence. Identity-bearing and irreversible actions are upgraded to approval on every invocation even if an adapter claims otherwise. Idempotency keys are bound to the exact adapter, tool, capability, purpose, evidence, sanitized arguments, and dry-run mode; a collision with different input is rejected.
+
+Distribution-OS currently supplies three core adapters: read-only GitHub observation, private AI preparation, and founder-owned public handoff. User manifests can also be registered for MCP, the bounded GitHub CLI reader, an MCP-compatible managed gateway such as Composio, or a manual handoff. Registration stores no token and grants no execution rights; external transports start in `setup-required`.
+
+The connection lifecycle is explicit:
+
+1. Register a non-secret manifest and optional credential environment-variable name.
+2. Probe the transport and discover its live tools.
+3. Intersect inferred tool capabilities with the manifest's declared capabilities. MCP annotations and mutation verbs take precedence; an unclassified operation is not silently treated as read-only.
+4. Mark the adapter verified only when at least one bounded tool survives that mapping.
+5. Create an idempotent action request with purpose, evidence references, and sanitized arguments.
+6. Re-evaluate host policy and either block, stop for approval, complete a no-transport dry run, or execute.
+7. Refresh the live tool list immediately before an MCP call to detect capability drift.
+8. Persist a bounded result or an explicit failure. Absence of confirmation never becomes success.
+
+Public execution remains disabled inside scheduled Automation Kernel runs. A user may explicitly approve a single identity-bearing Action Fabric request after reviewing its sanitized payload; approval is atomically claimed once, timestamped, applies only to that durable action record, and is rechecked immediately before execution. Interrupted `running` records recover as failed without automatic replay or a success claim.
+
 ## Native loop
 
 The native agent can call only five read tools:
@@ -33,7 +77,7 @@ Claude Code, OpenCode, Codex CLI, and Cursor Agent receive JSON evidence files i
 
 ## Durable ledger
 
-SQLite records the run, step names/statuses, selected runtime/model, concise diagnostics, decisions, and outcomes. It does not record secrets, raw prompts, private chain-of-thought, or complete runtime transcripts.
+SQLite records harness and automation runs, step names/statuses, triggers, selected runtime/model, concise diagnostics, decisions, prepared opportunity IDs, and outcomes. It does not record secrets, raw prompts, private chain-of-thought, or complete runtime transcripts.
 
 ## Connector boundary
 

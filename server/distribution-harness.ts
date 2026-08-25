@@ -68,7 +68,9 @@ export async function generateDistributionPlan(
   runtimeExecutor: AgentRuntimeExecutor,
   controlPlane: AIControlPlaneStore,
   database: DistributionDatabase,
+  options: { maxMoves?: number } = {},
 ): Promise<{ plan: DistributionPlan; application: PlanApplication }> {
+  const maxMoves = Math.max(1, Math.min(5, Math.trunc(options.maxMoves ?? 3)));
   const execution = await controlPlane.getExecutionProfile();
   const active = execution.runtimeId === "native" ? await executor.activeLanguageModel() : null;
   const runId = database.beginHarnessRun({ kind: "distribution-plan", productId, runtimeId: execution.runtimeId, provider: active?.provider, model: active?.model || execution.runtimeModel || "runtime default" });
@@ -91,12 +93,12 @@ export async function generateDistributionPlan(
         prompt: [
           "Build the next evidence-grounded distribution plan.",
           "Return keys: summary, assumptions, moves. Each move requires channelId, type, title, whyNow, suggestedAngle, draftCopy, citationLabels, relevanceScore, valueScore, freshnessScore, promotionRisk.",
-          "Use at most three moves and cite evidence titles exactly. Prefer useful contributions and learning over reach. Never describe an audience signal as live, representative, or independently verified.",
+          `Use at most ${maxMoves} moves and cite evidence titles exactly. Prefer useful contributions and learning over reach. Never describe an audience signal as live, representative, or independently verified.`,
         ].join(" "),
       });
       const evidenceLabels = new Set(context.evidence.map((item) => item.title));
       const productLabels = new Set(productEvidence.map((item) => item.title));
-      const moves = runtimeResult.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label)));
+      const moves = runtimeResult.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label))).slice(0, maxMoves);
       if (!moves.length) throw new Error("The runtime did not return any source-cited distribution moves.");
       const plan: DistributionPlan = { runId, productId, summary: runtimeResult.output.summary, assumptions: runtimeResult.output.assumptions, moves, mode: "ai", warning: "" };
       database.finishHarnessStep(planStep, "completed", `${runtimeResult.runtimeId} completed ${runtimeResult.activityCount} activity event${runtimeResult.activityCount === 1 ? "" : "s"} in ${runtimeResult.durationMs}ms after ${runtimeResult.attempts} attempt${runtimeResult.attempts === 1 ? "" : "s"} and returned ${moves.length} cited move${moves.length === 1 ? "" : "s"}.`);
@@ -126,7 +128,7 @@ export async function generateDistributionPlan(
     instructions: [
       "You are the governed Distribution-OS planning agent.",
       "Use the available read-only tools before producing a plan.",
-      "Return at most three high-leverage moves. Contribution and useful learning beat reach.",
+      `Return at most ${maxMoves} high-leverage moves. Contribution and useful learning beat reach.`,
       "Do not invent trends, conversations, customer demand, metrics, testimonials, or external signals.",
       "Every move must cite at least one exact product evidence title returned by readProductEvidence. Claims based on audience observations may additionally cite exact labels from readAudienceSignals.",
       "Respect channel policy. Public execution always remains a separate human approval step.",
@@ -175,7 +177,7 @@ export async function generateDistributionPlan(
     if (missingTools.length) throw new Error(`Required planning tools were not called: ${missingTools.join(", ")}`);
     const evidenceLabels = new Set(context.evidence.map((item) => item.title));
     const productLabels = new Set(productEvidence.map((item) => item.title));
-    const moves = result.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label)));
+    const moves = result.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label))).slice(0, maxMoves);
     if (!moves.length) throw new Error("The agent did not return any source-cited distribution moves.");
     const plan: DistributionPlan = { runId, productId, summary: result.output.summary, assumptions: result.output.assumptions, moves, mode: "ai", warning: "" };
     const steps = result.steps as Array<{ toolCalls?: Array<{ toolName?: string }>; toolResults?: unknown[]; text?: string }>;

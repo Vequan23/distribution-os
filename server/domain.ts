@@ -19,6 +19,9 @@ export type SignalKind = "question" | "pain" | "request" | "mention" | "unknown"
 export type SignalOrigin = "manual" | "github";
 export type ConnectorKind = "github";
 export type ConnectorStatus = "connected" | "error";
+export type AutomationTriggerKind = "manual" | "schedule";
+export type AutomationRunStatus = "queued" | "running" | "waiting-approval" | "completed" | "failed" | "cancelled";
+export type AutomationStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
 export interface ProviderCatalogEntry {
   id: ModelProviderId;
@@ -149,6 +152,66 @@ export interface SourceConnector {
   importedCount: number;
   rateLimitRemaining: number | null;
   createdAt: string;
+}
+
+export interface AutomationControl {
+  paused: boolean;
+  publicExecutionEnabled: false;
+  approvalBoundary: "always";
+  updatedAt: string;
+}
+
+export interface AutomationPlaybook {
+  id: string;
+  productId: string;
+  productName: string;
+  name: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  maxActionsPerRun: number;
+  requireApproval: true;
+  lastRunAt: string;
+  nextRunAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AutomationStep {
+  id: string;
+  runId: string;
+  sequence: number;
+  name: string;
+  status: AutomationStepStatus;
+  detail: string;
+  startedAt: string;
+  completedAt: string;
+}
+
+export interface AutomationRun {
+  id: string;
+  playbookId: string;
+  playbookName: string;
+  productId: string;
+  productName: string;
+  trigger: AutomationTriggerKind;
+  status: AutomationRunStatus;
+  idempotencyKey: string;
+  summary: string;
+  error: string;
+  createdOpportunityIds: string[];
+  createdAt: string;
+  completedAt: string;
+  steps: AutomationStep[];
+}
+
+export type AutomationAdapterCapability = ActionAdapterDescriptor;
+
+export interface AutomationState {
+  control: AutomationControl;
+  playbooks: AutomationPlaybook[];
+  runs: AutomationRun[];
+  adapters: AutomationAdapterCapability[];
+  actionFabric: ActionFabricState;
 }
 
 export interface OnboardingSourceInput {
@@ -340,6 +403,7 @@ export interface DashboardState {
   audienceSignals: AudienceSignal[];
   recentEvents: DistributionEvent[];
   harnessRuns: HarnessRun[];
+  automation: AutomationState;
 }
 
 export interface OpportunityScoreInput {
@@ -358,3 +422,4 @@ export function scoreOpportunity(input: OpportunityScoreInput): number {
   const riskPenalty = bounded.promotionRisk * 0.18;
   return Math.round(Math.max(0, Math.min(100, positive - riskPenalty)));
 }
+import type { ActionAdapterDescriptor, ActionFabricState } from "../packages/action-fabric/src/index.ts";

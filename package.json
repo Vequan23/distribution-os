@@ -22,6 +22,7 @@
     "@ai-sdk/google": "^4.0.51",
     "@ai-sdk/openai": "^4.0.47",
     "@ai-sdk/openai-compatible": "^3.0.37",
+    "@modelcontextprotocol/client": "^2.0.0",
     "ai": "^7.0.79",
     "mammoth": "^1.10.0",
     "osx-components": "^0.7.0",
@@ -30,6 +31,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
     "@types/node": "^24.10.0",
     "@types/pdf-parse": "^1.1.5",
     "@vitejs/plugin-vue": "^6.0.1",

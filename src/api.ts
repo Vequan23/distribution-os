@@ -1,4 +1,5 @@
-import type { AIControlPlane, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft, SourceConnector } from "../server/domain.ts";
+import type { AIControlPlane, AutomationPlaybook, AutomationRun, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft, SourceConnector } from "../server/domain.ts";
+import type { ActionAdapterDescriptor, ActionCapability, ActionDecision, ActionExecutionRecord, ActionTransport } from "../packages/action-fabric/src/index.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -19,6 +20,73 @@ export function loadDashboard(): Promise<DashboardState> {
 
 export function refreshWorkspace(): Promise<DashboardState> {
   return request<DashboardState>("/api/refresh", { method: "POST", body: "{}" });
+}
+
+export function setAutomationPaused(paused: boolean): Promise<{ dashboard: DashboardState }> {
+  return request<{ dashboard: DashboardState }>("/api/automation/control", { method: "POST", body: JSON.stringify({ paused }) });
+}
+
+export function createAutomationPlaybook(input: { productId: string; name?: string; intervalMinutes: number; maxActionsPerRun: number }): Promise<{ playbook: AutomationPlaybook; dashboard: DashboardState }> {
+  return request<{ playbook: AutomationPlaybook; dashboard: DashboardState }>("/api/automation/playbooks", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateAutomationPlaybook(id: string, input: { enabled: boolean; intervalMinutes: number; maxActionsPerRun: number }): Promise<{ playbook: AutomationPlaybook; dashboard: DashboardState }> {
+  return request<{ playbook: AutomationPlaybook; dashboard: DashboardState }>(`/api/automation/playbooks/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+export function runAutomationPlaybook(id: string): Promise<{ run: AutomationRun; dashboard: DashboardState }> {
+  return request<{ run: AutomationRun; dashboard: DashboardState }>(`/api/automation/playbooks/${encodeURIComponent(id)}/run`, { method: "POST", body: "{}" });
+}
+
+export function createActionAdapter(input: {
+  name: string;
+  transport: Exclude<ActionTransport, "direct-api">;
+  capabilities: ActionCapability[];
+  endpoint?: string;
+  command?: string;
+  gateway?: string;
+  connectionRef?: string;
+  credentialEnv?: string;
+}): Promise<{ adapter: ActionAdapterDescriptor; dashboard: DashboardState }> {
+  return request<{ adapter: ActionAdapterDescriptor; dashboard: DashboardState }>("/api/action-fabric/adapters", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function setActionAdapterEnabled(id: string, enabled: boolean): Promise<{ adapter: ActionAdapterDescriptor; dashboard: DashboardState }> {
+  return request<{ adapter: ActionAdapterDescriptor; dashboard: DashboardState }>(`/api/action-fabric/adapters/${encodeURIComponent(id)}/state`, { method: "POST", body: JSON.stringify({ enabled }) });
+}
+
+export function probeActionAdapter(id: string): Promise<{ adapter: ActionAdapterDescriptor; dashboard: DashboardState }> {
+  return request<{ adapter: ActionAdapterDescriptor; dashboard: DashboardState }>(`/api/action-fabric/adapters/${encodeURIComponent(id)}/probe`, { method: "POST", body: "{}" });
+}
+
+export function requestActionExecution(input: {
+  adapterId: string;
+  capability: ActionCapability;
+  toolName: string;
+  purpose: string;
+  evidenceRefs: string[];
+  arguments: Record<string, unknown>;
+  idempotencyKey: string;
+  dryRun?: boolean;
+}): Promise<{ record: ActionExecutionRecord; dashboard: DashboardState }> {
+  return request<{ record: ActionExecutionRecord; dashboard: DashboardState }>("/api/action-fabric/actions", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function approveActionExecution(id: string): Promise<{ record: ActionExecutionRecord; dashboard: DashboardState }> {
+  return request<{ record: ActionExecutionRecord; dashboard: DashboardState }>(`/api/action-fabric/actions/${encodeURIComponent(id)}/approve`, { method: "POST", body: "{}" });
+}
+
+export function previewActionPolicy(input: {
+  adapterId: string;
+  capability: ActionCapability;
+  productId?: string;
+  evidenceRefs?: string[];
+  purpose?: string;
+  dryRun?: boolean;
+  budgetUsed?: number;
+  budgetLimit?: number;
+}): Promise<ActionDecision> {
+  return request<ActionDecision>("/api/action-fabric/evaluate", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function loadAIControlPlane(): Promise<AIControlPlane> {

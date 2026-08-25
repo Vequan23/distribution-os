@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import { activateAgentRuntime, activateModelProfile, captureProductSignals, connectGitHubSource, decideOpportunity, decideSignal, disconnectSourceConnector, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, recordOpportunityOutcome, refreshWorkspace, saveModelProfile, syncSourceConnector, testModelProfile, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
-import type { AIControlPlane, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
+import { activateAgentRuntime, activateModelProfile, approveActionExecution, captureProductSignals, connectGitHubSource, createActionAdapter, createAutomationPlaybook, decideOpportunity, decideSignal, disconnectSourceConnector, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, previewActionPolicy, probeActionAdapter, recordOpportunityOutcome, refreshWorkspace, requestActionExecution, runAutomationPlaybook, saveModelProfile, setActionAdapterEnabled, setAutomationPaused, syncSourceConnector, testModelProfile, updateAutomationPlaybook, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
+import type { AIControlPlane, AutomationRun, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
+import type { ActionAdapterDescriptor, ActionCapability, ActionExecutionRecord, ActionToolDescriptor, ActionTransport } from "../packages/action-fabric/src/index.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
 
-type View = "command" | "onboarding" | "memory" | "signals" | "audience" | "campaigns" | "channels" | "journal" | "harness" | "settings";
+type View = "command" | "automation" | "onboarding" | "memory" | "signals" | "audience" | "campaigns" | "channels" | "journal" | "harness" | "settings";
 
 const state = ref<DashboardState | null>(null);
 const view = ref<View>("command");
@@ -40,6 +41,17 @@ const channelEditingId = ref("");
 const channelNotice = ref<{ tone: "success" | "danger"; title: string; detail: string } | null>(null);
 const channelForm = reactive<{ mode: ChannelMode; dailyLimit: number }>({ mode: "approval", dailyLimit: 1 });
 const profileForm = reactive({ name: "", provider: "anthropic" as ModelProviderId, model: "", baseUrl: "https://api.anthropic.com/v1", apiKey: "" });
+const automationBusyId = ref("");
+const automationNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
+const automationForm = reactive({ productId: "", name: "", intervalMinutes: 1440, maxActionsPerRun: 1 });
+const actionAdapterOpen = ref(false);
+const actionAdapterBusyId = ref("");
+const actionAdapterForm = reactive({
+  name: "", transport: "mcp" as Exclude<ActionTransport, "direct-api">,
+  capabilities: ["observe", "search", "read"] as ActionCapability[], endpoint: "", command: "gh", gateway: "composio", connectionRef: "", credentialEnv: "",
+});
+const actionInvocationOpen = ref(false);
+const actionInvocation = reactive({ adapterId: "", adapterName: "", toolName: "", capability: "read" as ActionCapability, purpose: "", evidenceRefs: "", argumentsJson: "{}" });
 
 const readyOpportunities = computed(() => state.value?.opportunities.filter((item) => item.status === "ready") ?? []);
 const selected = computed(() => {
@@ -54,6 +66,11 @@ const reviewedSignals = computed(() => state.value?.signalInbox.filter((item) =>
 const activeRuntime = computed(() => ai.value?.runtimes.find((runtime) => runtime.id === ai.value?.execution.runtimeId) ?? null);
 const activeModelProfile = computed(() => ai.value?.profiles.find((profile) => profile.id === ai.value?.execution.modelProfileId) ?? null);
 const selectedProvider = computed(() => ai.value?.providers.find((provider) => provider.id === profileForm.provider));
+const actionCapabilityOptions = computed<ActionCapability[]>(() => actionAdapterForm.transport === "cli"
+  ? ["observe", "search", "read"]
+  : actionAdapterForm.transport === "manual"
+    ? ["execute", "measure"]
+    : ["observe", "search", "read", "prepare", "execute", "measure"]);
 
 watch(selected, (opportunity) => {
   draft.value = opportunity?.draftCopy ?? "";
@@ -64,6 +81,7 @@ onMounted(async () => {
     state.value = await loadDashboard();
     signalForm.productId = state.value.products[0]?.id ?? "";
     connectorForm.productId = state.value.products[0]?.id ?? "";
+    automationForm.productId = state.value.products[0]?.id ?? "";
     connectorForm.repository = state.value.products[0]?.repositoryUrl.includes("github.com") ? state.value.products[0].repositoryUrl : "";
     if (state.value.onboarding.required) view.value = "onboarding";
     selectedId.value = readyOpportunities.value[0]?.id ?? state.value.opportunities[0]?.id ?? "";
@@ -179,6 +197,209 @@ async function refresh(): Promise<void> {
   }
 }
 
+async function toggleAutomationControl(): Promise<void> {
+  if (!state.value) return;
+  automationBusyId.value = "control";
+  automationNotice.value = null;
+  const paused = !state.value.automation.control.paused;
+  try {
+    state.value = (await setAutomationPaused(paused)).dashboard;
+    automationNotice.value = paused
+      ? { tone: "warning", title: "Automation paused", detail: "Scheduled sensing and preparation are stopped. The ledger and approval queue remain available." }
+      : { tone: "success", title: "Automation resumed", detail: "Due playbooks may observe and prepare work again. Public actions still require your approval." };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Automation control failed", detail: cause instanceof Error ? cause.message : "The control state could not be changed." };
+  } finally {
+    automationBusyId.value = "";
+  }
+}
+
+async function createPlaybook(): Promise<void> {
+  if (!automationForm.productId) return;
+  automationBusyId.value = "new";
+  automationNotice.value = null;
+  try {
+    const result = await createAutomationPlaybook({ ...automationForm, name: automationForm.name.trim() || undefined });
+    state.value = result.dashboard;
+    automationForm.name = "";
+    automationNotice.value = { tone: "success", title: "Evidence loop created", detail: "The loop may observe and prepare bounded work on schedule. It cannot publish, reply, or impersonate you." };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Playbook was not created", detail: cause instanceof Error ? cause.message : "Review the automation limits and try again." };
+  } finally {
+    automationBusyId.value = "";
+  }
+}
+
+async function togglePlaybook(id: string, enabled: boolean, intervalMinutes: number, maxActionsPerRun: number): Promise<void> {
+  automationBusyId.value = id;
+  automationNotice.value = null;
+  try {
+    const result = await updateAutomationPlaybook(id, { enabled, intervalMinutes, maxActionsPerRun });
+    state.value = result.dashboard;
+    automationNotice.value = { tone: enabled ? "success" : "warning", title: enabled ? "Playbook resumed" : "Playbook paused", detail: enabled ? "The next due run may observe and prepare work." : "This playbook will not run until you resume it." };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Playbook could not be updated", detail: cause instanceof Error ? cause.message : "Try again." };
+  } finally {
+    automationBusyId.value = "";
+  }
+}
+
+async function runPlaybook(id: string): Promise<void> {
+  automationBusyId.value = id;
+  automationNotice.value = null;
+  try {
+    const result = await runAutomationPlaybook(id);
+    state.value = result.dashboard;
+    automationNotice.value = result.run.status === "waiting-approval"
+      ? { tone: "success", title: "Useful work is ready for judgment", detail: result.run.summary }
+      : result.run.status === "failed"
+        ? { tone: "danger", title: "The loop stopped safely", detail: result.run.error || result.run.summary }
+        : { tone: "success", title: "Automation run complete", detail: result.run.summary };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Automation run could not start", detail: cause instanceof Error ? cause.message : "Try again." };
+  } finally {
+    automationBusyId.value = "";
+  }
+}
+
+function setAdapterTransport(transport: Exclude<ActionTransport, "direct-api">): void {
+  actionAdapterForm.transport = transport;
+  actionAdapterForm.capabilities = transport === "mcp" ? ["observe", "search", "read"]
+    : transport === "cli" ? ["observe", "search", "read"]
+      : transport === "managed-gateway" ? ["observe", "search", "read"]
+        : ["execute", "measure"];
+}
+
+function toggleAdapterCapability(capability: ActionCapability): void {
+  actionAdapterForm.capabilities = actionAdapterForm.capabilities.includes(capability)
+    ? actionAdapterForm.capabilities.filter((item) => item !== capability)
+    : [...actionAdapterForm.capabilities, capability];
+}
+
+async function saveActionAdapter(): Promise<void> {
+  actionAdapterBusyId.value = "new-adapter";
+  automationNotice.value = null;
+  try {
+    const result = await createActionAdapter({ ...actionAdapterForm });
+    state.value = result.dashboard;
+    actionAdapterForm.name = "";
+    actionAdapterForm.endpoint = "";
+    actionAdapterForm.connectionRef = "";
+    actionAdapterForm.credentialEnv = "";
+    actionAdapterOpen.value = false;
+    automationNotice.value = { tone: "success", title: "Capability contract registered", detail: `${result.adapter.name} is visible to the host policy. Setup remains explicit; registration did not grant credentials or execute an action.` };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Adapter was not registered", detail: cause instanceof Error ? cause.message : "Review its capability contract and try again." };
+  } finally {
+    actionAdapterBusyId.value = "";
+  }
+}
+
+async function probeAdapter(adapter: ActionAdapterDescriptor): Promise<void> {
+  actionAdapterBusyId.value = adapter.id;
+  automationNotice.value = null;
+  try {
+    const result = await probeActionAdapter(adapter.id);
+    state.value = result.dashboard;
+    automationNotice.value = result.adapter.transport === "manual"
+      ? { tone: "success", title: "Human handoff is ready", detail: "The manifest is active. Distribution OS will package only the reviewed payload and will never claim that the external action occurred." }
+      : { tone: "success", title: "Connection verified", detail: `${result.adapter.name} exposed ${result.adapter.connection.tools.length} bounded tool${result.adapter.connection.tools.length === 1 ? "" : "s"}. Only those discovered capabilities can be requested.` };
+  } catch (cause) {
+    state.value = await loadDashboard();
+    automationNotice.value = { tone: "danger", title: "Connection was not activated", detail: cause instanceof Error ? cause.message : "Discovery failed. The adapter remains in setup and cannot execute." };
+  } finally {
+    actionAdapterBusyId.value = "";
+  }
+}
+
+function openActionInvocation(adapter: ActionAdapterDescriptor, tool: ActionToolDescriptor): void {
+  actionInvocation.adapterId = adapter.id;
+  actionInvocation.adapterName = adapter.name;
+  actionInvocation.toolName = tool.name;
+  actionInvocation.capability = tool.capabilities[0] || "read";
+  actionInvocation.purpose = "";
+  actionInvocation.evidenceRefs = selected.value?.evidence.map((item) => item.id).join(", ") || "";
+  actionInvocation.argumentsJson = adapter.transport === "cli" && tool.name === "list-issues" ? '{\n  "repository": "owner/repository",\n  "limit": 10\n}' : "{}";
+  actionInvocationOpen.value = true;
+  automationNotice.value = null;
+}
+
+async function runActionInvocation(): Promise<void> {
+  actionAdapterBusyId.value = "action-request";
+  automationNotice.value = null;
+  try {
+    const parsed = JSON.parse(actionInvocation.argumentsJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Arguments must be one JSON object.");
+    const idempotencyKey = `ui:${actionInvocation.adapterId}:${actionInvocation.toolName}:${crypto.randomUUID()}`;
+    const result = await requestActionExecution({
+      adapterId: actionInvocation.adapterId, capability: actionInvocation.capability, toolName: actionInvocation.toolName,
+      purpose: actionInvocation.purpose, evidenceRefs: actionInvocation.evidenceRefs.split(",").map((item) => item.trim()).filter(Boolean),
+      arguments: parsed as Record<string, unknown>, idempotencyKey,
+    });
+    state.value = result.dashboard;
+    actionInvocationOpen.value = false;
+    automationNotice.value = result.record.status === "approval-required"
+      ? { tone: "warning", title: "Stopped for human approval", detail: "The policy decision and bounded argument keys were recorded. Nothing has been sent yet." }
+      : result.record.status === "completed"
+        ? { tone: "success", title: "Action completed", detail: result.record.summary }
+        : { tone: "danger", title: "Action did not complete", detail: result.record.error || result.record.decision.reasons.join(" ") };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Action request was rejected", detail: cause instanceof Error ? cause.message : "Review the purpose, evidence, and JSON arguments." };
+  } finally {
+    actionAdapterBusyId.value = "";
+  }
+}
+
+async function approveAction(record: ActionExecutionRecord): Promise<void> {
+  actionAdapterBusyId.value = record.id;
+  automationNotice.value = null;
+  try {
+    const result = await approveActionExecution(record.id);
+    state.value = result.dashboard;
+    automationNotice.value = result.record.status === "completed"
+      ? { tone: "success", title: "Approved action completed", detail: result.record.summary }
+      : { tone: "danger", title: "Approved action stopped safely", detail: result.record.error || result.record.decision.reasons.join(" ") };
+  } catch (cause) {
+    state.value = await loadDashboard();
+    automationNotice.value = { tone: "danger", title: "Approval could not be executed", detail: cause instanceof Error ? cause.message : "The connection may have changed. No success was claimed." };
+  } finally {
+    actionAdapterBusyId.value = "";
+  }
+}
+
+async function toggleActionAdapter(adapter: ActionAdapterDescriptor): Promise<void> {
+  actionAdapterBusyId.value = adapter.id;
+  automationNotice.value = null;
+  try {
+    const result = await setActionAdapterEnabled(adapter.id, adapter.state === "disabled");
+    state.value = result.dashboard;
+    automationNotice.value = { tone: result.adapter.state === "disabled" ? "warning" : "success", title: result.adapter.state === "disabled" ? "Adapter disabled" : "Adapter returned to setup", detail: "The host policy updated immediately. No credential or external state was changed." };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Adapter state was not changed", detail: cause instanceof Error ? cause.message : "Try again." };
+  } finally {
+    actionAdapterBusyId.value = "";
+  }
+}
+
+async function inspectActionBoundary(adapter: ActionAdapterDescriptor): Promise<void> {
+  const capability = adapter.capabilities.includes("execute") ? "execute" : adapter.capabilities[0];
+  if (!capability) return;
+  actionAdapterBusyId.value = adapter.id;
+  try {
+    const product = state.value?.products[0];
+    const decision = await previewActionPolicy({ adapterId: adapter.id, capability, productId: product?.id, evidenceRefs: product ? [product.id] : ["preview"], purpose: `Preview the ${adapter.name} boundary.`, budgetLimit: 1 });
+    automationNotice.value = {
+      tone: decision.status === "blocked" ? "danger" : decision.status === "approval-required" ? "warning" : "success",
+      title: decision.status === "allowed" ? "Policy allows this bounded action" : decision.status === "approval-required" ? "Human approval required" : "Policy blocks this action",
+      detail: decision.reasons.join(" "),
+    };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Policy preview failed", detail: cause instanceof Error ? cause.message : "Try again." };
+  } finally {
+    actionAdapterBusyId.value = "";
+  }
+}
+
 async function createProduct(input: OnboardProductInput): Promise<void> {
   onboardingBusy.value = true;
   error.value = "";
@@ -186,6 +407,7 @@ async function createProduct(input: OnboardProductInput): Promise<void> {
     const result = await onboardProduct(input);
     state.value = result.dashboard;
     signalForm.productId = result.productId;
+    automationForm.productId = result.productId;
     selectedId.value = state.value.opportunities.find((item) => item.productId === result.productId)?.id ?? "";
     view.value = "memory";
   } catch (cause) {
@@ -405,6 +627,11 @@ function selectOpportunity(opportunity: Opportunity): void {
   view.value = "command";
 }
 
+function reviewAutomationRun(run: AutomationRun): void {
+  selectedId.value = run.createdOpportunityIds[0] ?? selectedId.value;
+  view.value = "command";
+}
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
@@ -415,6 +642,7 @@ function formatDate(value: string): string {
 
 const navItems: Array<{ id: View; label: string; icon: string; section?: string }> = [
   { id: "command", label: "Command Center", icon: "dashboard", section: "OPERATE" },
+  { id: "automation", label: "Automation", icon: "refresh" },
   { id: "onboarding", label: "Add Product", icon: "plus", section: "UNDERSTAND" },
   { id: "memory", label: "Product Memory", icon: "boxes" },
   { id: "signals", label: "Signal Inbox", icon: "inbox" },
@@ -532,6 +760,109 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
               <osx-button slot="actions" variant="primary" icon="sparkle" :loading="planBusy" @click="runDistributionPlan(state.products[0].id)">Generate next plan</osx-button>
             </osx-empty-state>
           </div>
+        </section>
+      </main>
+
+      <main v-else-if="state && view === 'automation'" class="workspace-page automation-page">
+        <header class="page-header-with-action">
+          <div><p class="eyebrow">AUTOMATION KERNEL</p><h1>Automate the practice, not your identity.</h1><p>Scheduled loops may observe bounded sources, prepare evidence-cited work, and learn from outcomes. Every public action stops for human judgment.</p></div>
+          <osx-button :variant="state.automation.control.paused ? 'primary' : 'secondary'" :icon="state.automation.control.paused ? 'play' : 'pause'" :loading="automationBusyId === 'control'" @click="toggleAutomationControl">{{ state.automation.control.paused ? "Resume automation" : "Pause automation" }}</osx-button>
+        </header>
+
+        <osx-alert v-if="automationNotice" :tone="automationNotice.tone" :title="automationNotice.title" dismissible @dismiss="automationNotice = null">{{ automationNotice.detail }}</osx-alert>
+        <osx-alert :tone="state.automation.control.paused ? 'warning' : 'info'" :title="state.automation.control.paused ? 'All automated loops are paused' : 'Human approval is a hard boundary'">
+          {{ state.automation.control.paused ? "No scheduled source sync, plan, or draft preparation will begin until you resume it." : "Automation can create private drafts and review-queue items. Scheduled public execution is disabled; every identity-bearing connection call still stops for one-time human approval." }}
+        </osx-alert>
+
+        <section class="automation-metrics" aria-label="Automation status">
+          <article><span>Active loops</span><strong>{{ state.automation.playbooks.filter((item) => item.enabled).length }}</strong><small>{{ state.automation.playbooks.length }} configured</small></article>
+          <article><span>Awaiting judgment</span><strong>{{ state.automation.runs.filter((item) => item.status === 'waiting-approval').length }}</strong><small>Prepared, never published</small></article>
+          <article><span>Scheduled public execution</span><strong>OFF</strong><small>One-time approval only</small></article>
+          <article><span>Action budget</span><strong>{{ state.automation.playbooks.reduce((sum, item) => sum + (item.enabled ? item.maxActionsPerRun : 0), 0) }}</strong><small>Maximum prepared per cycle</small></article>
+        </section>
+
+        <section v-if="state.products.length" class="automation-create-panel">
+          <div class="section-heading"><div><p class="eyebrow">NEW EVIDENCE LOOP</p><h2>Create a bounded operating rhythm</h2><p>Each cycle refreshes read-only sources, generates a small plan, prepares cited drafts, and stops at approval. Empty cycles are valid; the system will not manufacture activity.</p></div><osx-badge tone="success" dot>Local scheduler</osx-badge></div>
+          <form class="automation-form" @submit.prevent="createPlaybook">
+            <label>Product<select v-model="automationForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
+            <label>Loop name <small>Optional</small><input v-model="automationForm.name" maxlength="120" placeholder="Weekly evidence-to-contribution loop" /></label>
+            <label>Run cadence<select v-model.number="automationForm.intervalMinutes"><option :value="60">Every hour</option><option :value="360">Every 6 hours</option><option :value="720">Every 12 hours</option><option :value="1440">Daily</option><option :value="4320">Every 3 days</option><option :value="10080">Weekly</option></select></label>
+            <label>Preparation budget<select v-model.number="automationForm.maxActionsPerRun"><option :value="1">1 move per run</option><option :value="2">2 moves per run</option><option :value="3">3 moves per run</option></select></label>
+            <footer><span><osx-icon name="lock" :size="15"></osx-icon> Approval is always required. This cannot be disabled.</span><osx-button type="button" variant="primary" icon="plus" :loading="automationBusyId === 'new'" :disabled="Boolean(automationBusyId)" @click="createPlaybook">Create evidence loop</osx-button></footer>
+          </form>
+        </section>
+        <osx-empty-state v-else class="page-empty-state" icon="refresh" title="Automation needs product truth first">Onboard a product before scheduling decisions. The kernel refuses to automate without bounded evidence and an explicit objective.<osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button></osx-empty-state>
+
+        <section v-if="state.automation.playbooks.length" class="automation-section">
+          <div class="section-heading"><div><p class="eyebrow">PLAYBOOKS</p><h2>Governed loops</h2><p>Schedules survive service restarts through the local ledger. A duplicate trigger cannot create a duplicate run.</p></div><osx-badge>{{ state.automation.playbooks.length }} configured</osx-badge></div>
+          <div class="playbook-grid">
+            <article v-for="playbook in state.automation.playbooks" :key="playbook.id" :class="['playbook-card', { paused: !playbook.enabled }]">
+              <header><span class="playbook-icon"><osx-icon name="refresh" :size="20"></osx-icon></span><div><h3>{{ playbook.name }}</h3><small>{{ playbook.productName }}</small></div><osx-badge :tone="playbook.enabled ? 'success' : 'warning'" dot>{{ playbook.enabled ? "Active" : "Paused" }}</osx-badge></header>
+              <dl><div><dt>Cadence</dt><dd>{{ playbook.intervalMinutes >= 1440 ? `${playbook.intervalMinutes / 1440} day${playbook.intervalMinutes === 1440 ? '' : 's'}` : `${playbook.intervalMinutes / 60} hour${playbook.intervalMinutes === 60 ? '' : 's'}` }}</dd></div><div><dt>Budget</dt><dd>{{ playbook.maxActionsPerRun }} move{{ playbook.maxActionsPerRun === 1 ? "" : "s" }}</dd></div><div><dt>Approval</dt><dd>Always</dd></div></dl>
+              <p>{{ playbook.lastRunAt ? `Last run ${formatDate(playbook.lastRunAt)} at ${formatTime(playbook.lastRunAt)}` : "Not run yet" }}<br />{{ playbook.enabled ? `Next due ${formatDate(playbook.nextRunAt)} at ${formatTime(playbook.nextRunAt)}` : "Schedule is paused" }}</p>
+              <footer><osx-button size="small" :disabled="Boolean(automationBusyId)" @click="togglePlaybook(playbook.id, !playbook.enabled, playbook.intervalMinutes, playbook.maxActionsPerRun)">{{ playbook.enabled ? "Pause" : "Resume" }}</osx-button><osx-button size="small" variant="primary" icon="play" :loading="automationBusyId === playbook.id" :disabled="Boolean(automationBusyId) || !playbook.enabled || state.automation.control.paused" @click="runPlaybook(playbook.id)">Run now</osx-button></footer>
+            </article>
+          </div>
+        </section>
+
+        <section class="automation-section">
+          <div class="section-heading">
+            <div><p class="eyebrow">ACTION FABRIC</p><h2>One trustworthy capability layer</h2><p>Direct APIs, MCP servers, local CLIs, managed gateways, and human handoffs share the same contract. The host—not the adapter—owns permissions and approval.</p></div>
+            <div class="section-heading-actions"><osx-badge>{{ state.automation.adapters.length }} adapters</osx-badge><osx-button size="small" icon="plus" @click="actionAdapterOpen = !actionAdapterOpen">{{ actionAdapterOpen ? "Close" : "Add capability" }}</osx-button></div>
+          </div>
+          <form v-if="actionAdapterOpen" class="action-adapter-form" @submit.prevent="saveActionAdapter">
+            <header><div><strong>Register a capability contract</strong><p>This stores no token and executes nothing. Credentials stay in environment or secure storage when a transport is activated.</p></div><osx-badge tone="success" dot>Local manifest</osx-badge></header>
+            <div class="adapter-transport-picker" role="radiogroup" aria-label="Adapter transport">
+              <button v-for="transport in state.automation.actionFabric.transports.filter((item) => item.id !== 'direct-api')" :key="transport.id" type="button" :class="{ active: actionAdapterForm.transport === transport.id }" @click="setAdapterTransport(transport.id as Exclude<ActionTransport, 'direct-api'>)"><strong>{{ transport.name }}</strong><small>{{ transport.description }}</small></button>
+            </div>
+            <div class="action-adapter-fields">
+              <label>Adapter name<input v-model="actionAdapterForm.name" required maxlength="80" placeholder="Founder research MCP" /></label>
+              <template v-if="actionAdapterForm.transport === 'mcp'"><label>MCP HTTP endpoint<input v-model="actionAdapterForm.endpoint" required inputmode="url" placeholder="http://127.0.0.1:3001/mcp" /></label><label>Bearer-token environment variable <small>Optional; value is never stored</small><input v-model="actionAdapterForm.credentialEnv" autocomplete="off" placeholder="RESEARCH_MCP_TOKEN" /></label></template>
+              <label v-else-if="actionAdapterForm.transport === 'cli'">Allowed executable<select v-model="actionAdapterForm.command"><option value="gh">GitHub CLI · bounded read operations</option></select><small>Claude Code, Cursor, OpenCode, and Codex are agent runtimes configured in AI Harness—not distribution transports.</small></label>
+              <template v-else-if="actionAdapterForm.transport === 'managed-gateway'"><label>Gateway<select v-model="actionAdapterForm.gateway"><option value="composio">Composio over MCP</option></select></label><label>MCP endpoint<input v-model="actionAdapterForm.endpoint" required inputmode="url" placeholder="https://your-gateway.example/mcp" /></label><label>Connection reference <small>Optional label, never a token</small><input v-model="actionAdapterForm.connectionRef" placeholder="founder-social" /></label><label>Bearer-token environment variable <small>Optional; read only by the local service</small><input v-model="actionAdapterForm.credentialEnv" autocomplete="off" placeholder="COMPOSIO_MCP_TOKEN" /></label></template>
+              <label v-else>Execution owner<input value="Human handoff" disabled /></label>
+            </div>
+            <fieldset><legend>Declared capabilities</legend><label v-for="capability in actionCapabilityOptions" :key="capability"><input type="checkbox" :checked="actionAdapterForm.capabilities.includes(capability)" @change="toggleAdapterCapability(capability)" />{{ capability }}</label></fieldset>
+            <footer><span><osx-icon name="shield" :size="16"></osx-icon> Execute always becomes identity-bearing and requires approval.</span><osx-button variant="primary" icon="plus" :loading="actionAdapterBusyId === 'new-adapter'" @click="saveActionAdapter">Register adapter</osx-button></footer>
+          </form>
+          <div class="fabric-policy-strip"><span v-for="value in state.automation.actionFabric.ethos" :key="value"><osx-icon name="check" :size="14"></osx-icon>{{ value }}</span></div>
+          <div class="adapter-list">
+            <article v-for="adapter in state.automation.adapters" :key="adapter.id">
+              <span class="adapter-icon"><osx-icon :name="adapter.publicSideEffect ? 'send' : adapter.transport === 'mcp' ? 'boxes' : adapter.transport === 'cli' ? 'terminal' : adapter.id === 'github-observer' ? 'git-branch' : 'sparkle'" :size="19"></osx-icon></span>
+              <div><strong>{{ adapter.name }}</strong><p>{{ adapter.description }}</p><small>{{ adapter.transport.replace('-', ' ') }} · {{ adapter.capabilities.join(' · ') }}</small><span class="adapter-contract">{{ adapter.risk.replace('-', ' ') }} · {{ adapter.approval.replace('-', ' ') }} approval · {{ adapter.configSummary }}</span><span v-if="adapter.connection.lastCheckedAt" class="adapter-checked">Checked {{ formatDate(adapter.connection.lastCheckedAt) }} at {{ formatTime(adapter.connection.lastCheckedAt) }} · {{ adapter.connection.credentialSource.replace('-', ' ') }} credentials</span><span v-if="adapter.connection.lastError" class="adapter-error">{{ adapter.connection.lastError }}</span><div v-if="adapter.connection.tools.length" class="adapter-tools"><button v-for="tool in adapter.connection.tools" :key="tool.name" type="button" :title="adapter.origin === 'core' && adapter.id !== 'human-handoff' ? `${tool.description} Use its purpose-built workspace.` : tool.description" :disabled="adapter.origin === 'core' && adapter.id !== 'human-handoff'" @click="openActionInvocation(adapter, tool)"><osx-icon :name="tool.publicSideEffect ? 'send' : 'boxes'" :size="13"></osx-icon>{{ tool.name }}<small>{{ tool.capabilities.join(' · ') }}</small></button></div></div>
+              <aside><osx-badge :tone="adapter.state === 'available' ? 'success' : adapter.state === 'disabled' ? 'warning' : 'neutral'" dot>{{ adapter.state === 'available' ? (adapter.transport === 'manual' ? 'handoff ready' : adapter.origin === 'core' ? 'ready' : 'verified') : adapter.state }}</osx-badge><osx-button v-if="adapter.origin === 'user' && adapter.state !== 'disabled'" size="small" icon="refresh" :loading="actionAdapterBusyId === adapter.id" @click="probeAdapter(adapter)">{{ adapter.transport === "manual" ? (adapter.connection.lastCheckedAt ? "Reconfirm handoff" : "Confirm handoff") : (adapter.connection.lastCheckedAt ? "Recheck" : "Test connection") }}</osx-button><osx-button size="small" :disabled="adapter.state !== 'available'" @click="inspectActionBoundary(adapter)">Inspect policy</osx-button><osx-button v-if="adapter.origin === 'user'" size="small" @click="toggleActionAdapter(adapter)">{{ adapter.state === "disabled" ? "Enable" : "Disable" }}</osx-button></aside>
+            </article>
+          </div>
+          <form v-if="actionInvocationOpen" class="action-invocation-form" @submit.prevent="runActionInvocation">
+            <header><div><p class="eyebrow">BOUNDED ACTION REQUEST</p><h3>{{ actionInvocation.adapterName }} · {{ actionInvocation.toolName }}</h3><p>Distribution OS will evaluate policy before transport execution. Identity-bearing work is recorded as approval-required and stops before the connection is called.</p></div><osx-button size="small" icon="close" aria-label="Close action request" @click="actionInvocationOpen = false">Close</osx-button></header>
+            <div class="action-invocation-fields"><label>Capability<select v-model="actionInvocation.capability"><option v-for="capability in state.automation.adapters.find((item) => item.id === actionInvocation.adapterId)?.connection.tools.find((item) => item.name === actionInvocation.toolName)?.capabilities || []" :key="capability" :value="capability">{{ capability }}</option></select></label><label>Purpose<input v-model="actionInvocation.purpose" required maxlength="500" placeholder="Learn which documented pain points recur in this repository" /></label><label>Evidence references <small>Comma-separated local record IDs</small><input v-model="actionInvocation.evidenceRefs" placeholder="evidence-id, signal-id" /></label><label>Arguments JSON<textarea v-model="actionInvocation.argumentsJson" rows="6" spellcheck="false"></textarea></label></div>
+            <footer><span><osx-icon name="shield" :size="15"></osx-icon> Credential-like argument keys are rejected before persistence.</span><osx-button variant="primary" icon="play" :loading="actionAdapterBusyId === 'action-request'" @click="runActionInvocation">Evaluate and continue</osx-button></footer>
+          </form>
+
+          <div class="connection-ledger-heading"><div><strong>Connection ledger</strong><p>Every request records policy, a sanitized payload preview, approval time, and confirmed result. A missing result is a failure—not success.</p></div><osx-badge>{{ state.automation.actionFabric.executions.length }} recent</osx-badge></div>
+          <div v-if="state.automation.actionFabric.executions.length" class="connection-ledger">
+            <article v-for="record in state.automation.actionFabric.executions" :key="record.id">
+              <header><div><strong>{{ record.adapterName }} · {{ record.toolName }}</strong><small>{{ record.capability }} · {{ formatDate(record.createdAt) }} at {{ formatTime(record.createdAt) }}</small></div><osx-badge :tone="record.status === 'completed' ? 'success' : record.status === 'failed' || record.status === 'blocked' ? 'danger' : 'warning'" dot>{{ record.status.replace('-', ' ') }}</osx-badge></header>
+              <p>{{ record.summary || record.error || record.decision.reasons.join(' ') }}</p><small>Purpose: {{ record.purpose }} · Evidence: {{ record.evidenceRefs.join(', ') || 'none' }}<template v-if="record.approvedAt"> · Approved {{ formatDate(record.approvedAt) }} at {{ formatTime(record.approvedAt) }}</template></small>
+              <details class="action-payload-preview" :open="record.status === 'approval-required'"><summary>Review sanitized action payload</summary><pre>{{ record.argumentPreview }}</pre></details>
+              <footer v-if="record.status === 'approval-required'"><span><osx-icon name="lock" :size="14"></osx-icon>Review the exact sanitized payload and evidence before allowing one connection call.</span><osx-button variant="primary" size="small" icon="check" :loading="actionAdapterBusyId === record.id" @click="approveAction(record)">Approve and run once</osx-button></footer>
+              <footer v-else-if="record.externalUrl"><span>Confirmed external result</span><osx-link :href="record.externalUrl" external>Open result</osx-link></footer>
+            </article>
+          </div>
+          <osx-empty-state v-else icon="boxes" title="No connection actions yet">Verify an adapter, choose one of its discovered tools, and submit a bounded request. Setup alone never creates external activity.</osx-empty-state>
+        </section>
+
+        <section class="automation-section">
+          <div class="section-heading"><div><p class="eyebrow">EXECUTION LEDGER</p><h2>Every cycle is inspectable</h2><p>Triggers, steps, failures, prepared moves, and approval waits are durable. Raw prompts, credentials, and hidden reasoning are not stored.</p></div><osx-badge>{{ state.automation.runs.length }} recent</osx-badge></div>
+          <div v-if="state.automation.runs.length" class="automation-run-list">
+            <article v-for="run in state.automation.runs" :key="run.id">
+              <header><div><strong>{{ run.playbookName }}</strong><small>{{ run.productName }} · {{ run.trigger }} · {{ formatDate(run.createdAt) }} at {{ formatTime(run.createdAt) }}</small></div><osx-badge :tone="run.status === 'waiting-approval' || run.status === 'completed' ? 'success' : run.status === 'failed' ? 'danger' : 'warning'" dot>{{ run.status.replace('-', ' ') }}</osx-badge></header>
+              <p>{{ run.summary || run.error || "Run in progress" }}</p>
+              <ol><li v-for="step in run.steps" :key="step.id"><span :class="['run-step-dot', step.status]"></span><div><strong>{{ step.name }}</strong><small>{{ step.detail }}</small></div></li></ol>
+              <footer v-if="run.createdOpportunityIds.length"><osx-button size="small" icon="inbox" @click="reviewAutomationRun(run)">Review prepared work</osx-button></footer>
+            </article>
+          </div>
+          <osx-empty-state v-else icon="activity" title="No automation cycles yet">Create an evidence loop, then run it once manually. Scheduled execution begins only after you choose a cadence and the global control remains active.</osx-empty-state>
         </section>
       </main>
 

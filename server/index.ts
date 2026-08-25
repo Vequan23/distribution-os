@@ -10,6 +10,10 @@ import { generateDistributionPlan } from "./distribution-harness.ts";
 import { writeContributionDraft } from "./contribution-harness.ts";
 import { AgentRuntimeExecutor } from "./runtime-executor.ts";
 import { GitHubConnectorService } from "./github-connector.ts";
+import { AutomationKernel } from "./automation-kernel.ts";
+import { DistributionActionFabric } from "./action-fabric.ts";
+import { ActionConnectionService } from "./action-connections.ts";
+import { isTrustedLocalRequest } from "./local-request.ts";
 import { isProductStage, type ChannelMode, type OnboardProductInput, type OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
@@ -18,6 +22,14 @@ const aiControlPlane = new AIControlPlaneStore(database.dataDirectory);
 const modelExecutor = new NativeModelExecutor(aiControlPlane);
 const runtimeExecutor = new AgentRuntimeExecutor(aiControlPlane);
 const githubConnector = new GitHubConnectorService(database);
+const actionFabric = new DistributionActionFabric(database);
+const actionConnections = new ActionConnectionService(database, actionFabric);
+const automationKernel = new AutomationKernel(database, {
+  syncConnector: async (id) => githubConnector.sync(id),
+  generatePlan: async (productId, maxMoves) => generateDistributionPlan(productId, modelExecutor, runtimeExecutor, aiControlPlane, database, { maxMoves }),
+  writeDraft: async (opportunityId) => writeContributionDraft(opportunityId, modelExecutor, database),
+  actionFabric,
+});
 const projectRoot = resolve(process.cwd());
 const distDirectory = join(projectRoot, "dist");
 
@@ -71,6 +83,15 @@ function serveStatic(pathname: string, response: ServerResponse, head = false): 
 
 const server = createServer(async (request, response) => {
   try {
+    if (!isTrustedLocalRequest({
+      method: request.method,
+      host: request.headers.host,
+      origin: request.headers.origin,
+      secFetchSite: request.headers["sec-fetch-site"],
+    })) {
+      json(response, 403, { error: "Distribution-OS accepts requests only from the local application origin." });
+      return;
+    }
     const url = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`);
     if (request.method === "GET" && url.pathname === "/api/health") {
       json(response, 200, { ok: true, storage: "local", generatedAt: new Date().toISOString() });
@@ -128,6 +149,109 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/api/refresh") {
       json(response, 200, database.getDashboard());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/automation/control") {
+      const body = await readJson(request);
+      if (typeof body.paused !== "boolean") throw new Error("Automation control requires a paused state.");
+      json(response, 200, { automation: database.setAutomationPaused(body.paused), dashboard: database.getDashboard() });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/action-fabric") {
+      json(response, 200, database.getAutomationState().actionFabric);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/action-fabric/adapters") {
+      const body = await readJson(request);
+      const adapter = database.createActionAdapter({
+        name: String(body.name || ""),
+        transport: String(body.transport || ""),
+        capabilities: Array.isArray(body.capabilities) ? body.capabilities.map(String) : [],
+        endpoint: typeof body.endpoint === "string" ? body.endpoint : undefined,
+        command: typeof body.command === "string" ? body.command : undefined,
+        gateway: typeof body.gateway === "string" ? body.gateway : undefined,
+        connectionRef: typeof body.connectionRef === "string" ? body.connectionRef : undefined,
+        credentialEnv: typeof body.credentialEnv === "string" ? body.credentialEnv : undefined,
+      });
+      json(response, 201, { adapter, dashboard: database.getDashboard() });
+      return;
+    }
+    const adapterStateMatch = url.pathname.match(/^\/api\/action-fabric\/adapters\/([^/]+)\/state$/);
+    if (request.method === "POST" && adapterStateMatch) {
+      const body = await readJson(request);
+      if (typeof body.enabled !== "boolean") throw new Error("Adapter state requires an enabled value.");
+      const adapter = database.setActionAdapterEnabled(decodeURIComponent(adapterStateMatch[1]), body.enabled);
+      json(response, 200, { adapter, dashboard: database.getDashboard() });
+      return;
+    }
+    const adapterProbeMatch = url.pathname.match(/^\/api\/action-fabric\/adapters\/([^/]+)\/probe$/);
+    if (request.method === "POST" && adapterProbeMatch) {
+      const adapter = await actionConnections.probe(decodeURIComponent(adapterProbeMatch[1]));
+      json(response, 200, { adapter, dashboard: database.getDashboard() });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/action-fabric/actions") {
+      const body = await readJson(request);
+      if (Object.prototype.hasOwnProperty.call(body, "approved")) throw new Error("Initial action requests cannot self-approve. Use the recorded one-time approval endpoint.");
+      const capability = String(body.capability || "");
+      if (!["observe", "search", "read", "prepare", "execute", "measure"].includes(capability)) throw new Error("Choose a discovered action capability.");
+      const record = await actionConnections.request({
+        adapterId: String(body.adapterId || ""),
+        capability: capability as import("../packages/action-fabric/src/index.ts").ActionCapability,
+        toolName: String(body.toolName || ""), purpose: String(body.purpose || ""),
+        evidenceRefs: Array.isArray(body.evidenceRefs) ? body.evidenceRefs.map(String) : [],
+        arguments: body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments) ? body.arguments as Record<string, unknown> : {},
+        idempotencyKey: String(body.idempotencyKey || ""),
+        dryRun: body.dryRun === true, budgetLimit: Number(body.budgetLimit || 1),
+      });
+      json(response, 201, { record, dashboard: database.getDashboard() });
+      return;
+    }
+    const actionApprovalMatch = url.pathname.match(/^\/api\/action-fabric\/actions\/([^/]+)\/approve$/);
+    if (request.method === "POST" && actionApprovalMatch) {
+      const record = await actionConnections.approve(decodeURIComponent(actionApprovalMatch[1]));
+      json(response, 200, { record, dashboard: database.getDashboard() });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/action-fabric/evaluate") {
+      const body = await readJson(request);
+      const capability = String(body.capability || "");
+      if (!["observe", "search", "read", "prepare", "execute", "measure"].includes(capability)) throw new Error("Choose a declared action capability.");
+      json(response, 200, actionFabric.evaluate({
+        adapterId: String(body.adapterId || ""), capability: capability as import("../packages/action-fabric/src/index.ts").ActionCapability,
+        productId: typeof body.productId === "string" ? body.productId : undefined,
+        evidenceRefs: Array.isArray(body.evidenceRefs) ? body.evidenceRefs.map(String) : [],
+        approved: body.approved === true, dryRun: body.dryRun === true,
+        budgetUsed: Number(body.budgetUsed || 0), budgetLimit: Number(body.budgetLimit || 1), purpose: typeof body.purpose === "string" ? body.purpose : undefined,
+      }));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/automation/playbooks") {
+      const body = await readJson(request);
+      const playbook = database.createAutomationPlaybook({
+        productId: String(body.productId || ""),
+        name: typeof body.name === "string" ? body.name : undefined,
+        intervalMinutes: Number(body.intervalMinutes),
+        maxActionsPerRun: Number(body.maxActionsPerRun),
+      });
+      json(response, 201, { playbook, dashboard: database.getDashboard() });
+      return;
+    }
+    const automationPlaybookMatch = url.pathname.match(/^\/api\/automation\/playbooks\/([^/]+)$/);
+    if (request.method === "PUT" && automationPlaybookMatch) {
+      const body = await readJson(request);
+      const playbook = database.updateAutomationPlaybook(decodeURIComponent(automationPlaybookMatch[1]), {
+        enabled: body.enabled === true,
+        intervalMinutes: Number(body.intervalMinutes),
+        maxActionsPerRun: Number(body.maxActionsPerRun),
+      });
+      json(response, 200, { playbook, dashboard: database.getDashboard() });
+      return;
+    }
+    const automationRunMatch = url.pathname.match(/^\/api\/automation\/playbooks\/([^/]+)\/run$/);
+    if (request.method === "POST" && automationRunMatch) {
+      const run = await automationKernel.runPlaybook(decodeURIComponent(automationRunMatch[1]));
+      json(response, 201, { run, dashboard: database.getDashboard() });
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/connectors/github") {
@@ -279,7 +403,15 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`Private ledger: ${database.databasePath}`);
 });
 
+const automationTimer = setInterval(() => {
+  void automationKernel.tickDuePlaybooks().catch((error) => {
+    console.error("[distribution-os] automation tick failed", { message: error instanceof Error ? error.message : "Unexpected automation error" });
+  });
+}, 30_000);
+automationTimer.unref();
+
 function shutdown(): void {
+  clearInterval(automationTimer);
   server.close(() => {
     database.close();
     process.exit(0);

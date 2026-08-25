@@ -11,6 +11,7 @@ import { buildProductBrief } from "../server/ingestion.ts";
 import type { NativeModelExecutor } from "../server/model-executor.ts";
 import { synthesizeProductBrief } from "../server/onboarding-harness.ts";
 import { AgentRuntimeExecutor } from "../server/runtime-executor.ts";
+import { AutomationKernel } from "../server/automation-kernel.ts";
 
 function seedProduct(database: DistributionDatabase): string {
   return database.onboardProduct({
@@ -236,6 +237,92 @@ test("runtime failures persist only normalized diagnostics", async () => {
     const persisted = JSON.stringify(database.getHarnessRun(result.plan.runId));
     assert.doesNotMatch(`${result.plan.warning}\n${persisted}`, /customer@example\.com|private prompt/i);
     assert.match(result.plan.warning, /failed before producing a reviewable result/i);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("automation prepares bounded work once and stops at human approval", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-automation-"));
+  const database = new DistributionDatabase(directory);
+  try {
+    const productId = seedProduct(database);
+    const playbook = database.createAutomationPlaybook({ productId, intervalMinutes: 60, maxActionsPerRun: 1 });
+    let planCalls = 0;
+    let draftCalls = 0;
+    const kernel = new AutomationKernel(database, {
+      syncConnector: async () => ({ importedCount: 0, inspectedCount: 0 }),
+      generatePlan: async (targetProductId, maxMoves) => {
+        planCalls += 1;
+        assert.equal(targetProductId, productId);
+        assert.equal(maxMoves, 1);
+        const plan = {
+          runId: `automation-plan-${planCalls}`,
+          productId,
+          summary: "One bounded contribution grounded in approved product evidence.",
+          assumptions: [],
+          mode: "ai" as const,
+          warning: "",
+          moves: [{
+            channelId: "devto",
+            type: "durable-content" as const,
+            title: `Explain the evidence loop ${planCalls}`,
+            whyNow: "The founder-approved brief supports a concrete explanation.",
+            suggestedAngle: "Teach the workflow and state its limits without promotional claims.",
+            draftCopy: "A useful distribution loop starts with evidence and ends with a measured outcome.",
+            citationLabels: ["Founder brief"], relevanceScore: 91, valueScore: 88, freshnessScore: 80, promotionRisk: 8,
+          }],
+        };
+        return { plan, application: database.applyDistributionPlan(plan) };
+      },
+      writeDraft: async (opportunityId) => {
+        draftCalls += 1;
+        database.updateOpportunityDraft(opportunityId, "A source-cited founder-editable contribution prepared inside the private ledger.");
+        return { runId: "draft-run", opportunityId, draftCopy: "A source-cited founder-editable contribution prepared inside the private ledger.", hook: "Evidence first", callToAction: "What did we miss?", citationLabels: ["Founder brief"], mode: "ai" as const, provider: "test", model: "test", warning: "" };
+      },
+    });
+
+    const first = await kernel.runPlaybook(playbook.id, "manual", "manual:test-once");
+    const repeated = await kernel.runPlaybook(playbook.id, "manual", "manual:test-once");
+    assert.equal(first.id, repeated.id);
+    assert.equal(first.status, "waiting-approval");
+    assert.equal(first.createdOpportunityIds.length, 1);
+    assert.equal(first.steps.length, 4);
+    assert.equal(first.steps.at(-1)?.name, "Stop at the human approval boundary");
+    assert.equal(planCalls, 1);
+    assert.equal(draftCalls, 1);
+    assert.equal(database.getAutomationState().control.publicExecutionEnabled, false);
+
+    database.decideOpportunity(first.createdOpportunityIds[0], "approve");
+    assert.equal(database.getAutomationRun(first.id).status, "completed");
+    database.decideOpportunity(first.createdOpportunityIds[0], "restore");
+    assert.equal(database.getAutomationRun(first.id).status, "waiting-approval");
+
+    database.setAutomationPaused(true);
+    await assert.rejects(() => kernel.runPlaybook(playbook.id), /automation is paused/i);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("interrupted automation runs recover safely after a service restart", () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-automation-recovery-"));
+  let database = new DistributionDatabase(directory);
+  try {
+    const productId = seedProduct(database);
+    const playbook = database.createAutomationPlaybook({ productId, intervalMinutes: 60, maxActionsPerRun: 1 });
+    const pending = database.beginAutomationRun(playbook.id, "schedule", "schedule:restart-test");
+    assert.equal(pending.run.status, "queued");
+    database.startAutomationRun(pending.run.id);
+    database.close();
+
+    database = new DistributionDatabase(directory);
+    const recovered = database.getAutomationRun(pending.run.id);
+    assert.equal(recovered.status, "failed");
+    assert.match(recovered.error, /closed safely/i);
+    assert.equal(database.getDueAutomationPlaybooks().some((item) => item.id === playbook.id), true);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

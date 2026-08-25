@@ -7,6 +7,12 @@ import {
   isProductStage,
   scoreOpportunity,
   type AudienceSignal,
+  type AutomationPlaybook,
+  type AutomationRun,
+  type AutomationRunStatus,
+  type AutomationState,
+  type AutomationStepStatus,
+  type AutomationTriggerKind,
   type Channel,
   type ChannelMode,
   type ChannelPolicyInput,
@@ -29,11 +35,34 @@ import {
   type SignalOrigin,
   type SourceConnector,
 } from "./domain.ts";
+import {
+  ACTION_CAPABILITIES,
+  ACTION_FABRIC_ETHOS,
+  ACTION_TRANSPORT_CATALOG,
+  ACTION_TRANSPORTS,
+  type ActionAdapterDescriptor,
+  type ActionCapability,
+  type ActionDecision,
+  type ActionExecutionRecord,
+  type ActionExecutionStatus,
+  type ActionRisk,
+  type ActionToolDescriptor,
+  type ActionTransport,
+} from "../packages/action-fabric/src/index.ts";
 
 type Row = Record<string, string | number | null>;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function stableJson(value: unknown): string {
+  const normalize = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(normalize);
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, normalize(child)]));
+    return item;
+  };
+  return JSON.stringify(normalize(value));
 }
 
 function inferSignalKind(text: string): SignalKind {
@@ -72,6 +101,8 @@ export class DistributionDatabase {
     this.migrate();
     this.seedChannels();
     this.markLegacyDemoData();
+    this.recoverInterruptedAutomationRuns();
+    this.recoverInterruptedActionExecutions();
   }
 
   close(): void {
@@ -223,6 +254,88 @@ export class DistributionDatabase {
         completed_at TEXT NOT NULL DEFAULT ''
       );
 
+      CREATE TABLE IF NOT EXISTS automation_control (
+        id TEXT PRIMARY KEY CHECK(id = 'global'),
+        paused INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS automation_playbooks (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        interval_minutes INTEGER NOT NULL,
+        max_actions_per_run INTEGER NOT NULL DEFAULT 1,
+        require_approval INTEGER NOT NULL DEFAULT 1,
+        last_run_at TEXT NOT NULL DEFAULT '',
+        next_run_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS automation_runs (
+        id TEXT PRIMARY KEY,
+        playbook_id TEXT NOT NULL REFERENCES automation_playbooks(id) ON DELETE CASCADE,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        trigger_kind TEXT NOT NULL CHECK(trigger_kind IN ('manual', 'schedule')),
+        status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'waiting-approval', 'completed', 'failed', 'cancelled')),
+        idempotency_key TEXT NOT NULL UNIQUE,
+        summary TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        created_opportunity_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS automation_steps (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed', 'skipped')),
+        detail TEXT NOT NULL DEFAULT '',
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS action_adapters (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        transport TEXT NOT NULL CHECK(transport IN ('mcp', 'cli', 'managed-gateway', 'manual')),
+        capabilities_json TEXT NOT NULL,
+        risk TEXT NOT NULL CHECK(risk IN ('read-only', 'private-write', 'identity-bearing', 'irreversible')),
+        approval TEXT NOT NULL CHECK(approval IN ('none', 'first-use', 'every-time')),
+        state TEXT NOT NULL CHECK(state IN ('available', 'setup-required', 'disabled')),
+        public_side_effect INTEGER NOT NULL DEFAULT 0,
+        config_json TEXT NOT NULL DEFAULT '{}',
+        config_summary TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS action_executions (
+        id TEXT PRIMARY KEY,
+        adapter_id TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('approval-required', 'running', 'completed', 'failed', 'blocked', 'cancelled')),
+        purpose TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+        arguments_json TEXT NOT NULL DEFAULT '{}',
+        argument_keys_json TEXT NOT NULL DEFAULT '[]',
+        decision_json TEXT NOT NULL DEFAULT '{}',
+        summary TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        external_id TEXT NOT NULL DEFAULT '',
+        external_url TEXT NOT NULL DEFAULT '',
+        idempotency_key TEXT NOT NULL UNIQUE,
+        dry_run INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        approved_at TEXT NOT NULL DEFAULT '',
+        completed_at TEXT NOT NULL DEFAULT ''
+      );
+
       CREATE INDEX IF NOT EXISTS opportunities_status_score_idx
         ON opportunities(status, score DESC, discovered_at DESC);
       CREATE INDEX IF NOT EXISTS evidence_product_idx
@@ -237,7 +350,19 @@ export class DistributionDatabase {
         ON signal_candidates(status, captured_at DESC);
       CREATE INDEX IF NOT EXISTS source_connectors_product_idx
         ON source_connectors(product_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS automation_playbooks_due_idx
+        ON automation_playbooks(enabled, next_run_at);
+      CREATE INDEX IF NOT EXISTS automation_runs_recent_idx
+        ON automation_runs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS automation_steps_run_idx
+        ON automation_steps(run_id, sequence);
+      CREATE INDEX IF NOT EXISTS action_adapters_transport_idx
+        ON action_adapters(transport, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS action_executions_recent_idx
+        ON action_executions(created_at DESC);
     `);
+
+    this.database.prepare("INSERT OR IGNORE INTO automation_control (id, paused, updated_at) VALUES ('global', 0, ?)").run(now());
 
     this.addColumn("products", "audience", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("products", "objective", "TEXT NOT NULL DEFAULT ''");
@@ -250,6 +375,12 @@ export class DistributionDatabase {
     this.addColumn("evidence", "confidence", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("signal_candidates", "origin", "TEXT NOT NULL DEFAULT 'manual'");
     this.addColumn("signal_candidates", "external_id", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("action_adapters", "credential_env", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("action_adapters", "last_checked_at", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("action_adapters", "last_error", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("action_adapters", "discovered_tools_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.addColumn("action_executions", "approved_at", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("action_executions", "dry_run", "INTEGER NOT NULL DEFAULT 0");
   }
 
   private addColumn(table: string, column: string, definition: string): void {
@@ -275,6 +406,38 @@ export class DistributionDatabase {
 
   private markLegacyDemoData(): void {
     this.database.prepare("UPDATE products SET is_demo = 1 WHERE id IN ('osx-components', 'aperta') AND audience = ''").run();
+  }
+
+  private recoverInterruptedAutomationRuns(): void {
+    const rows = this.database.prepare("SELECT id, playbook_id FROM automation_runs WHERE status IN ('queued', 'running')").all() as Row[];
+    if (!rows.length) return;
+    const recoveredAt = now();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) {
+        this.database.prepare(`
+          UPDATE automation_runs
+          SET status = 'failed', summary = ?, error = ?, completed_at = ? WHERE id = ?
+        `).run("The prior local service stopped before this automation cycle completed.", "The interrupted cycle was closed safely and will be eligible to run again. No public action was taken.", recoveredAt, row.id);
+        this.database.prepare("UPDATE automation_playbooks SET next_run_at = ?, updated_at = ? WHERE id = ?").run(recoveredAt, recoveredAt, row.playbook_id);
+        this.recordEvent("automation.run.recovered", "automation-run", String(row.id), "An interrupted automation cycle was closed safely and returned to the schedule.");
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private recoverInterruptedActionExecutions(): void {
+    const rows = this.database.prepare("SELECT id FROM action_executions WHERE status = 'running'").all() as Row[];
+    if (!rows.length) return;
+    const recoveredAt = now();
+    for (const row of rows) {
+      this.database.prepare("UPDATE action_executions SET status = 'failed', summary = ?, error = ?, completed_at = ? WHERE id = ?")
+        .run("The prior local service stopped before the connection returned a confirmed result.", "The interrupted action was closed as failed. Its idempotency key will not be executed again automatically.", recoveredAt, row.id);
+      this.recordEvent("action-fabric.execution.recovered", "action-execution", String(row.id), "An interrupted connection action was closed as failed without claiming external success.");
+    }
   }
 
   onboardProduct(input: OnboardProductInput, sources: IngestedSource[]): string {
@@ -676,6 +839,415 @@ export class DistributionDatabase {
     return rows.map((row) => this.getHarnessRun(String(row.id)));
   }
 
+  createAutomationPlaybook(input: { productId: string; name?: string; intervalMinutes: number; maxActionsPerRun: number }): AutomationPlaybook {
+    const product = this.database.prepare("SELECT name FROM products WHERE id = ? AND is_demo = 0").get(input.productId) as Row | undefined;
+    if (!product) throw new Error("Choose an onboarded product for this automation.");
+    this.validateAutomationLimits(input.intervalMinutes, input.maxActionsPerRun);
+    const id = randomUUID();
+    const createdAt = now();
+    const nextRunAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
+    const name = input.name?.trim().slice(0, 120) || `${String(product.name)} evidence loop`;
+    this.database.prepare(`
+      INSERT INTO automation_playbooks (
+        id, product_id, name, enabled, interval_minutes, max_actions_per_run,
+        require_approval, next_run_at, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?, 1, ?, ?, ?)
+    `).run(id, input.productId, name, input.intervalMinutes, input.maxActionsPerRun, nextRunAt, createdAt, createdAt);
+    this.recordEvent("automation.playbook.created", "automation-playbook", id, `${name} created with a permanent human approval boundary.`, { productId: input.productId, intervalMinutes: input.intervalMinutes, maxActionsPerRun: input.maxActionsPerRun });
+    return this.getAutomationPlaybook(id);
+  }
+
+  updateAutomationPlaybook(id: string, input: { enabled: boolean; intervalMinutes: number; maxActionsPerRun: number }): AutomationPlaybook {
+    const row = this.database.prepare("SELECT id, name FROM automation_playbooks WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new Error("Automation playbook not found");
+    this.validateAutomationLimits(input.intervalMinutes, input.maxActionsPerRun);
+    const updatedAt = now();
+    const nextRunAt = new Date(Date.now() + input.intervalMinutes * 60_000).toISOString();
+    this.database.prepare(`
+      UPDATE automation_playbooks
+      SET enabled = ?, interval_minutes = ?, max_actions_per_run = ?, require_approval = 1,
+          next_run_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(input.enabled ? 1 : 0, input.intervalMinutes, input.maxActionsPerRun, nextRunAt, updatedAt, id);
+    this.recordEvent("automation.playbook.updated", "automation-playbook", id, `${String(row.name)} ${input.enabled ? "enabled" : "paused"}; public execution still requires approval.`, { intervalMinutes: input.intervalMinutes, maxActionsPerRun: input.maxActionsPerRun });
+    return this.getAutomationPlaybook(id);
+  }
+
+  setAutomationPaused(paused: boolean): AutomationState {
+    this.database.prepare("UPDATE automation_control SET paused = ?, updated_at = ? WHERE id = 'global'").run(paused ? 1 : 0, now());
+    this.recordEvent(paused ? "automation.paused" : "automation.resumed", "automation-control", "global", paused ? "All automated sensing and preparation paused." : "Automated sensing and preparation resumed. Public actions still require approval.");
+    return this.getAutomationState();
+  }
+
+  getAutomationPlaybook(id: string): AutomationPlaybook {
+    const row = this.database.prepare(`
+      SELECT a.*, p.name AS product_name FROM automation_playbooks a
+      JOIN products p ON p.id = a.product_id WHERE a.id = ? AND p.is_demo = 0
+    `).get(id) as Row | undefined;
+    if (!row) throw new Error("Automation playbook not found");
+    return this.mapAutomationPlaybook(row);
+  }
+
+  getDueAutomationPlaybooks(referenceTime = now()): AutomationPlaybook[] {
+    const control = this.database.prepare("SELECT paused FROM automation_control WHERE id = 'global'").get() as Row;
+    if (Boolean(control.paused)) return [];
+    return (this.database.prepare(`
+      SELECT a.*, p.name AS product_name FROM automation_playbooks a
+      JOIN products p ON p.id = a.product_id
+      WHERE a.enabled = 1 AND p.is_demo = 0 AND a.next_run_at <= ?
+      ORDER BY a.next_run_at LIMIT 10
+    `).all(referenceTime) as Row[]).map((row) => this.mapAutomationPlaybook(row));
+  }
+
+  beginAutomationRun(playbookId: string, trigger: AutomationTriggerKind, idempotencyKey: string): { run: AutomationRun; created: boolean } {
+    const control = this.database.prepare("SELECT paused FROM automation_control WHERE id = 'global'").get() as Row;
+    if (Boolean(control.paused)) throw new Error("Automation is paused. Resume it before starting a run.");
+    const playbook = this.getAutomationPlaybook(playbookId);
+    if (!playbook.enabled) throw new Error("This automation playbook is paused.");
+    const existing = this.database.prepare("SELECT id FROM automation_runs WHERE idempotency_key = ?").get(idempotencyKey) as Row | undefined;
+    if (existing) return { run: this.getAutomationRun(String(existing.id)), created: false };
+    const active = this.database.prepare("SELECT id FROM automation_runs WHERE playbook_id = ? AND status IN ('queued', 'running') LIMIT 1").get(playbookId) as Row | undefined;
+    if (active) return { run: this.getAutomationRun(String(active.id)), created: false };
+    const id = randomUUID();
+    this.database.prepare(`
+      INSERT INTO automation_runs (id, playbook_id, product_id, trigger_kind, status, idempotency_key, created_at)
+      VALUES (?, ?, ?, ?, 'queued', ?, ?)
+    `).run(id, playbookId, playbook.productId, trigger, idempotencyKey, now());
+    this.recordEvent("automation.run.queued", "automation-run", id, `${playbook.name} queued from a ${trigger} trigger.`, { playbookId });
+    return { run: this.getAutomationRun(id), created: true };
+  }
+
+  startAutomationRun(id: string): void {
+    this.database.prepare("UPDATE automation_runs SET status = 'running' WHERE id = ? AND status = 'queued'").run(id);
+  }
+
+  beginAutomationStep(runId: string, sequence: number, name: string, detail = ""): string {
+    const id = randomUUID();
+    this.database.prepare(`
+      INSERT INTO automation_steps (id, run_id, sequence, name, status, detail, started_at)
+      VALUES (?, ?, ?, ?, 'running', ?, ?)
+    `).run(id, runId, sequence, name, detail, now());
+    return id;
+  }
+
+  finishAutomationStep(id: string, status: Exclude<AutomationStepStatus, "pending" | "running">, detail = ""): void {
+    this.database.prepare("UPDATE automation_steps SET status = ?, detail = ?, completed_at = ? WHERE id = ?").run(status, detail.slice(0, 1_000), now(), id);
+  }
+
+  finishAutomationRun(id: string, status: Exclude<AutomationRunStatus, "queued" | "running">, summary: string, error = "", opportunityIds: string[] = []): void {
+    this.database.prepare(`
+      UPDATE automation_runs SET status = ?, summary = ?, error = ?, created_opportunity_ids_json = ?, completed_at = ? WHERE id = ?
+    `).run(status, summary.slice(0, 1_000), error.slice(0, 1_000), JSON.stringify([...new Set(opportunityIds)]), now(), id);
+    const run = this.getAutomationRun(id);
+    const playbook = this.getAutomationPlaybook(run.playbookId);
+    const nextRunAt = new Date(Date.now() + playbook.intervalMinutes * 60_000).toISOString();
+    this.database.prepare("UPDATE automation_playbooks SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?").run(now(), nextRunAt, now(), run.playbookId);
+    this.recordEvent(`automation.run.${status}`, "automation-run", id, summary, { playbookId: run.playbookId, opportunityCount: opportunityIds.length });
+  }
+
+  getAutomationRun(id: string): AutomationRun {
+    const row = this.database.prepare(`
+      SELECT r.*, a.name AS playbook_name, p.name AS product_name FROM automation_runs r
+      JOIN automation_playbooks a ON a.id = r.playbook_id
+      JOIN products p ON p.id = r.product_id WHERE r.id = ?
+    `).get(id) as Row | undefined;
+    if (!row) throw new Error("Automation run not found");
+    const steps = (this.database.prepare("SELECT * FROM automation_steps WHERE run_id = ? ORDER BY sequence, started_at").all(id) as Row[]).map((step) => ({
+      id: String(step.id), runId: String(step.run_id), sequence: Number(step.sequence), name: String(step.name),
+      status: String(step.status) as AutomationStepStatus, detail: String(step.detail), startedAt: String(step.started_at), completedAt: String(step.completed_at),
+    }));
+    let createdOpportunityIds: string[] = [];
+    try { createdOpportunityIds = JSON.parse(String(row.created_opportunity_ids_json)) as string[]; } catch { createdOpportunityIds = []; }
+    return {
+      id: String(row.id), playbookId: String(row.playbook_id), playbookName: String(row.playbook_name),
+      productId: String(row.product_id), productName: String(row.product_name), trigger: String(row.trigger_kind) as AutomationTriggerKind,
+      status: String(row.status) as AutomationRunStatus, idempotencyKey: String(row.idempotency_key), summary: String(row.summary), error: String(row.error),
+      createdOpportunityIds, createdAt: String(row.created_at), completedAt: String(row.completed_at), steps,
+    };
+  }
+
+  getAutomationState(): AutomationState {
+    const controlRow = this.database.prepare("SELECT * FROM automation_control WHERE id = 'global'").get() as Row;
+    const playbooks = (this.database.prepare(`
+      SELECT a.*, p.name AS product_name FROM automation_playbooks a JOIN products p ON p.id = a.product_id
+      WHERE p.is_demo = 0 ORDER BY a.enabled DESC, a.updated_at DESC
+    `).all() as Row[]).map((row) => this.mapAutomationPlaybook(row));
+    const runs = (this.database.prepare(`
+      SELECT r.id FROM automation_runs r JOIN products p ON p.id = r.product_id
+      WHERE p.is_demo = 0 ORDER BY r.created_at DESC LIMIT 20
+    `).all() as Row[]).map((row) => this.getAutomationRun(String(row.id)));
+    const adapters = this.getActionAdapters();
+    return {
+      control: { paused: Boolean(controlRow.paused), publicExecutionEnabled: false, approvalBoundary: "always", updatedAt: String(controlRow.updated_at) },
+      playbooks,
+      runs,
+      adapters,
+      actionFabric: {
+        version: 1,
+        ethos: ACTION_FABRIC_ETHOS,
+        transports: ACTION_TRANSPORT_CATALOG,
+        adapters,
+        executions: this.getActionExecutions(),
+        policy: { identityBearingApproval: "every-time", arbitraryShell: "forbidden", secretPersistence: "forbidden", publicAutopilot: false },
+      },
+    };
+  }
+
+  getActionAdapters(): ActionAdapterDescriptor[] {
+    const connectedGitHub = Number((this.database.prepare("SELECT COUNT(*) AS count FROM source_connectors WHERE kind = 'github' AND status = 'connected'").get() as Row).count);
+    const core: ActionAdapterDescriptor[] = [
+      {
+        id: "github-observer", name: "GitHub signal observer", version: "1.0.0",
+        description: "Reads bounded issue metadata and quarantines candidates for review.", transport: "direct-api",
+        capabilities: ["observe", "search", "read"], risk: "read-only", approval: "none",
+        state: connectedGitHub ? "available" : "setup-required", publicSideEffect: false, origin: "core", configSummary: connectedGitHub ? `${connectedGitHub} connected source${connectedGitHub === 1 ? "" : "s"}` : "Connect a repository to activate",
+        connection: { lastCheckedAt: "", lastError: "", credentialSource: connectedGitHub ? "environment" : "none", tools: connectedGitHub ? [
+          { name: "sync-issues", description: "Read recent issue metadata into the quarantined Signal Inbox.", capabilities: ["observe", "search", "read"], risk: "read-only", publicSideEffect: false },
+        ] : [] },
+      },
+      {
+        id: "ai-preparation", name: "Evidence-grounded preparation", version: "1.0.0",
+        description: "Creates cited plans and founder-editable drafts inside the private ledger.", transport: "direct-api",
+        capabilities: ["read", "prepare"], risk: "private-write", approval: "none",
+        state: "available", publicSideEffect: false, origin: "core", configSummary: "Uses the active model or agent runtime",
+        connection: { lastCheckedAt: "", lastError: "", credentialSource: "external-runtime", tools: [
+          { name: "prepare-cited-work", description: "Prepare a cited plan or draft inside the private ledger.", capabilities: ["read", "prepare"], risk: "private-write", publicSideEffect: false },
+        ] },
+      },
+      {
+        id: "human-handoff", name: "Founder-owned public handoff", version: "1.0.0",
+        description: "Packages approved context for a human to publish or reply without impersonation.", transport: "manual",
+        capabilities: ["execute", "measure"], risk: "identity-bearing", approval: "every-time",
+        state: "available", publicSideEffect: true, origin: "core", configSummary: "Approval required for every action",
+        connection: { lastCheckedAt: "", lastError: "", credentialSource: "none", tools: [
+          { name: "human-handoff", description: "Give approved context to the founder for manual execution.", capabilities: ["execute", "measure"], risk: "identity-bearing", publicSideEffect: true },
+        ] },
+      },
+    ];
+    const configured = (this.database.prepare("SELECT * FROM action_adapters ORDER BY updated_at DESC, name").all() as Row[]).map((row): ActionAdapterDescriptor => {
+      let capabilities: ActionCapability[] = [];
+      let tools: ActionToolDescriptor[] = [];
+      try { capabilities = JSON.parse(String(row.capabilities_json)) as ActionCapability[]; } catch { capabilities = []; }
+      try { tools = JSON.parse(String(row.discovered_tools_json)) as ActionToolDescriptor[]; } catch { tools = []; }
+      return {
+        id: String(row.id), name: String(row.name), version: "1.0.0", description: this.adapterDescription(String(row.transport) as ActionTransport),
+        transport: String(row.transport) as ActionTransport, capabilities, risk: String(row.risk) as ActionRisk,
+        approval: String(row.approval) as ActionAdapterDescriptor["approval"], state: String(row.state) as ActionAdapterDescriptor["state"],
+        publicSideEffect: Boolean(row.public_side_effect), origin: "user", configSummary: String(row.config_summary),
+        connection: {
+          lastCheckedAt: String(row.last_checked_at), lastError: String(row.last_error),
+          credentialSource: String(row.credential_env) ? "environment" : String(row.transport) === "cli" ? "external-runtime" : "none",
+          tools,
+        },
+      };
+    });
+    return [...core, ...configured];
+  }
+
+  createActionAdapter(input: { name: string; transport: string; capabilities: string[]; endpoint?: string; command?: string; gateway?: string; connectionRef?: string; credentialEnv?: string }): ActionAdapterDescriptor {
+    const name = input.name.trim().slice(0, 80);
+    if (!name) throw new Error("Give this capability adapter a name.");
+    if (!ACTION_TRANSPORTS.includes(input.transport as ActionTransport) || input.transport === "direct-api") throw new Error("Choose MCP, local CLI, managed gateway, or human handoff.");
+    const transport = input.transport as Exclude<ActionTransport, "direct-api">;
+    const capabilities = [...new Set(input.capabilities)].filter((value): value is ActionCapability => ACTION_CAPABILITIES.includes(value as ActionCapability));
+    if (!capabilities.length) throw new Error("Declare at least one capability.");
+    const execute = capabilities.includes("execute");
+    const config: Record<string, string> = {};
+    let summary = "No credentials stored";
+    let state: ActionAdapterDescriptor["state"] = "setup-required";
+    const credentialEnv = (input.credentialEnv || "").trim();
+    if (credentialEnv && !/^[A-Z][A-Z0-9_]{2,80}$/.test(credentialEnv)) throw new Error("Credential environment variables must use uppercase letters, numbers, and underscores.");
+    if (credentialEnv && transport !== "mcp" && transport !== "managed-gateway") throw new Error("Credential environment references are only supported by MCP and managed gateway adapters.");
+
+    if (transport === "cli" && capabilities.some((capability) => !new Set<ActionCapability>(["observe", "search", "read"]).has(capability))) {
+      throw new Error("The GitHub CLI adapter is read-only and may only declare observe, search, and read capabilities.");
+    }
+    if (transport === "manual" && capabilities.some((capability) => !new Set<ActionCapability>(["execute", "measure"]).has(capability))) {
+      throw new Error("Human handoff adapters may only declare execute and measure capabilities.");
+    }
+
+    if (transport === "mcp") {
+      const endpoint = this.validateAdapterEndpoint(input.endpoint || "");
+      config.endpoint = endpoint;
+      summary = new URL(endpoint).host;
+      state = "setup-required";
+    } else if (transport === "cli") {
+      const command = (input.command || "").trim();
+      const allowed = new Set(["gh"]);
+      if (!allowed.has(command) || /[;&|`$<>\\\n\r]/.test(command)) throw new Error("Choose a supported executable. Arbitrary shell commands are forbidden.");
+      config.command = command;
+      summary = `${command} (no shell)`;
+      state = "setup-required";
+    } else if (transport === "managed-gateway") {
+      const gateway = (input.gateway || "").trim().toLowerCase();
+      if (gateway !== "composio") throw new Error("Composio is the only managed gateway recipe currently recognized.");
+      const connectionRef = (input.connectionRef || "").trim();
+      if (connectionRef && (!/^[a-zA-Z0-9_.:-]{1,160}$/.test(connectionRef) || /^(?:sk-|npm_|ghp_|github_pat_|bearer)/i.test(connectionRef))) throw new Error("Connection references may not contain secrets or executable content.");
+      config.gateway = gateway;
+      if (connectionRef) config.connectionRef = connectionRef;
+      const endpoint = this.validateAdapterEndpoint(input.endpoint || "");
+      config.endpoint = endpoint;
+      summary = connectionRef ? `Composio · ${connectionRef}` : `Composio · ${new URL(endpoint).host}`;
+    } else {
+      summary = "Human performs the external action";
+      state = "setup-required";
+    }
+
+    const risk: ActionRisk = execute ? "identity-bearing" : capabilities.includes("prepare") ? "private-write" : "read-only";
+    const approval = execute ? "every-time" : capabilities.includes("prepare") ? "first-use" : "none";
+    const id = `adapter-${randomUUID()}`;
+    const createdAt = now();
+    this.database.prepare(`
+      INSERT INTO action_adapters (id, name, transport, capabilities_json, risk, approval, state, public_side_effect, config_json, config_summary, credential_env, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, name, transport, JSON.stringify(capabilities), risk, approval, state, execute ? 1 : 0, JSON.stringify(config), summary, credentialEnv, createdAt, createdAt);
+    this.recordEvent("action-fabric.adapter.registered", "action-adapter", id, `${name} registered as a ${transport} adapter. It cannot exceed its declared capabilities.`, { transport, capabilities, risk, approval });
+    return this.getActionAdapters().find((adapter) => adapter.id === id)!;
+  }
+
+  setActionAdapterEnabled(id: string, enabled: boolean): ActionAdapterDescriptor {
+    const row = this.database.prepare("SELECT id, name, state FROM action_adapters WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new Error("Only user-configured adapters can be changed.");
+    const nextState = enabled ? "setup-required" : "disabled";
+    this.database.prepare("UPDATE action_adapters SET state = ?, updated_at = ? WHERE id = ?").run(nextState, now(), id);
+    this.recordEvent(enabled ? "action-fabric.adapter.enabled" : "action-fabric.adapter.disabled", "action-adapter", id, `${String(row.name)} ${enabled ? "returned to setup" : "was disabled"}.`);
+    return this.getActionAdapters().find((adapter) => adapter.id === id)!;
+  }
+
+  getActionAdapterConnection(id: string): { descriptor: ActionAdapterDescriptor; config: Record<string, string>; credentialEnv: string } {
+    const row = this.database.prepare("SELECT config_json, credential_env FROM action_adapters WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new Error("Only user-configured adapters have a connection manifest.");
+    let config: Record<string, string> = {};
+    try { config = JSON.parse(String(row.config_json)) as Record<string, string>; } catch { config = {}; }
+    const descriptor = this.getActionAdapters().find((adapter) => adapter.id === id);
+    if (!descriptor) throw new Error("Action adapter not found.");
+    return { descriptor, config, credentialEnv: String(row.credential_env) };
+  }
+
+  recordActionAdapterProbe(id: string, tools: ActionToolDescriptor[], error = ""): ActionAdapterDescriptor {
+    const row = this.database.prepare("SELECT name, state FROM action_adapters WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new Error("Action adapter not found.");
+    const checkedAt = now();
+    const state = error ? "setup-required" : "available";
+    this.database.prepare("UPDATE action_adapters SET state = ?, discovered_tools_json = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?")
+      .run(state, JSON.stringify(tools.slice(0, 100)), checkedAt, error.slice(0, 500), checkedAt, id);
+    this.recordEvent(error ? "action-fabric.adapter.probe-failed" : "action-fabric.adapter.connected", "action-adapter", id, error ? `${String(row.name)} could not be verified.` : `${String(row.name)} verified ${tools.length} bounded tool${tools.length === 1 ? "" : "s"}.`, { toolCount: tools.length });
+    return this.getActionAdapters().find((adapter) => adapter.id === id)!;
+  }
+
+  createActionExecution(input: { adapterId: string; capability: ActionCapability; toolName: string; status: ActionExecutionStatus; purpose: string; evidenceRefs: string[]; arguments: Record<string, unknown>; decision: ActionDecision; idempotencyKey: string; dryRun?: boolean }): { record: ActionExecutionRecord; created: boolean } {
+    const purpose = input.purpose.trim().slice(0, 500);
+    const idempotencyKey = input.idempotencyKey.trim();
+    if (!purpose) throw new Error("Describe why this action is useful before requesting it.");
+    if (!/^[A-Za-z0-9_.:-]{8,200}$/.test(idempotencyKey)) throw new Error("Use a stable idempotency key with at least 8 safe characters.");
+    if (!input.toolName.trim()) throw new Error("Choose a verified tool before requesting an action.");
+    const evidenceRefs = [...new Set(input.evidenceRefs.map((value) => value.trim()).filter(Boolean))].sort().slice(0, 100);
+    const argumentsJson = stableJson(input.arguments);
+    const existing = this.database.prepare("SELECT * FROM action_executions WHERE idempotency_key = ?").get(idempotencyKey) as Row | undefined;
+    if (existing) {
+      let existingEvidence: unknown = [];
+      let existingArguments: unknown = {};
+      try { existingEvidence = JSON.parse(String(existing.evidence_refs_json)); } catch { existingEvidence = []; }
+      try { existingArguments = JSON.parse(String(existing.arguments_json)); } catch { existingArguments = {}; }
+      const normalizedExistingEvidence = Array.isArray(existingEvidence) ? [...new Set(existingEvidence.map(String))].sort().slice(0, 100) : [];
+      const sameRequest = String(existing.adapter_id) === input.adapterId
+        && String(existing.capability) === input.capability
+        && String(existing.tool_name) === input.toolName.trim()
+        && String(existing.purpose) === purpose
+        && stableJson(normalizedExistingEvidence) === stableJson(evidenceRefs)
+        && stableJson(existingArguments) === argumentsJson
+        && Boolean(existing.dry_run) === Boolean(input.dryRun);
+      if (!sameRequest) throw new Error("Idempotency key is already bound to a different action request.");
+      return { record: this.getActionExecution(String(existing.id)), created: false };
+    }
+    const id = randomUUID();
+    const createdAt = now();
+    this.database.prepare(`
+      INSERT INTO action_executions (id, adapter_id, capability, tool_name, status, purpose, evidence_refs_json, arguments_json, argument_keys_json, decision_json, idempotency_key, dry_run, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, input.adapterId, input.capability, input.toolName.trim(), input.status, purpose, stableJson(evidenceRefs), argumentsJson, JSON.stringify(Object.keys(input.arguments).sort()), JSON.stringify(input.decision), idempotencyKey, input.dryRun ? 1 : 0, createdAt);
+    this.recordEvent("action-fabric.execution.requested", "action-execution", id, `${input.toolName} evaluated as ${input.status}.`, { adapterId: input.adapterId, capability: input.capability });
+    return { record: this.getActionExecution(id), created: true };
+  }
+
+  updateActionExecution(id: string, status: ActionExecutionStatus, summary = "", error = "", externalId = "", externalUrl = ""): ActionExecutionRecord {
+    if (externalUrl) {
+      try {
+        const url = new URL(externalUrl);
+        if (url.protocol !== "http:" && url.protocol !== "https:") externalUrl = "";
+      } catch { externalUrl = ""; }
+    }
+    const completedAt = new Set<ActionExecutionStatus>(["completed", "failed", "blocked", "cancelled"]).has(status) ? now() : "";
+    this.database.prepare("UPDATE action_executions SET status = ?, summary = ?, error = ?, external_id = ?, external_url = ?, completed_at = ? WHERE id = ?")
+      .run(status, summary.slice(0, 2_000), error.slice(0, 1_000), externalId.slice(0, 500), externalUrl.slice(0, 1_000), completedAt, id);
+    const record = this.getActionExecution(id);
+    this.recordEvent(`action-fabric.execution.${status}`, "action-execution", id, summary || error || `Connection action moved to ${status}.`, { adapterId: record.adapterId, capability: record.capability, toolName: record.toolName });
+    return record;
+  }
+
+  markActionExecutionApproved(id: string): { record: ActionExecutionRecord; claimed: boolean } {
+    const approvedAt = now();
+    const result = this.database.prepare("UPDATE action_executions SET status = 'running', approved_at = ? WHERE id = ? AND status = 'approval-required'").run(approvedAt, id);
+    const claimed = Number(result.changes) === 1;
+    const record = this.getActionExecution(id);
+    if (claimed) this.recordEvent("action-fabric.execution.approved", "action-execution", id, "A human approved this exact bounded action payload for one connection call.", { adapterId: record.adapterId, capability: record.capability, toolName: record.toolName });
+    return { record, claimed };
+  }
+
+  getActionExecution(id: string): ActionExecutionRecord {
+    const row = this.database.prepare("SELECT * FROM action_executions WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new Error("Action execution not found.");
+    const adapter = this.getActionAdapters().find((item) => item.id === String(row.adapter_id));
+    let evidenceRefs: string[] = []; let argumentKeys: string[] = []; let argumentPayload: Record<string, unknown> = {}; let decision = {} as ActionDecision;
+    try { evidenceRefs = JSON.parse(String(row.evidence_refs_json)) as string[]; } catch { evidenceRefs = []; }
+    try { argumentKeys = JSON.parse(String(row.argument_keys_json)) as string[]; } catch { argumentKeys = []; }
+    try { argumentPayload = JSON.parse(String(row.arguments_json)) as Record<string, unknown>; } catch { argumentPayload = {}; }
+    try { decision = JSON.parse(String(row.decision_json)) as ActionDecision; } catch { decision = { status: "blocked", reasons: ["Stored policy decision was unreadable."], adapterId: String(row.adapter_id), capability: String(row.capability) as ActionCapability, approval: "every-time", publicSideEffect: true, evaluatedAt: String(row.created_at) }; }
+    return {
+      id: String(row.id), adapterId: String(row.adapter_id), adapterName: adapter?.name || "Unavailable adapter", capability: String(row.capability) as ActionCapability,
+      toolName: String(row.tool_name), status: String(row.status) as ActionExecutionStatus, purpose: String(row.purpose), evidenceRefs, argumentKeys,
+      argumentPreview: JSON.stringify(argumentPayload, null, 2).slice(0, 8_000), decision,
+      summary: String(row.summary), error: String(row.error), externalId: String(row.external_id), externalUrl: String(row.external_url), idempotencyKey: String(row.idempotency_key),
+      dryRun: Boolean(row.dry_run), createdAt: String(row.created_at), approvedAt: String(row.approved_at), completedAt: String(row.completed_at),
+    };
+  }
+
+  getActionExecutionPayload(id: string): Record<string, unknown> {
+    const row = this.database.prepare("SELECT arguments_json FROM action_executions WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new Error("Action execution not found.");
+    try { return JSON.parse(String(row.arguments_json)) as Record<string, unknown>; } catch { return {}; }
+  }
+
+  getActionExecutions(limit = 30): ActionExecutionRecord[] {
+    const rows = this.database.prepare("SELECT id FROM action_executions ORDER BY created_at DESC LIMIT ?").all(Math.max(1, Math.min(100, limit))) as Row[];
+    return rows.map((row) => this.getActionExecution(String(row.id)));
+  }
+
+  private validateAdapterEndpoint(value: string): string {
+    let url: URL;
+    try { url = new URL(value); } catch { throw new Error("Enter a valid MCP HTTP endpoint."); }
+    if (!new Set(["http:", "https:"]).has(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("MCP endpoints must use HTTP(S) and may not embed credentials or query parameters.");
+    if (url.protocol !== "https:" && !new Set(["127.0.0.1", "localhost", "[::1]"]).has(url.hostname)) throw new Error("Remote MCP endpoints must use HTTPS.");
+    return url.toString();
+  }
+
+  private adapterDescription(transport: ActionTransport): string {
+    return ACTION_TRANSPORT_CATALOG.find((item) => item.id === transport)?.description || "Declared capability adapter.";
+  }
+
+  private mapAutomationPlaybook(row: Row): AutomationPlaybook {
+    return {
+      id: String(row.id), productId: String(row.product_id), productName: String(row.product_name), name: String(row.name),
+      enabled: Boolean(row.enabled), intervalMinutes: Number(row.interval_minutes), maxActionsPerRun: Number(row.max_actions_per_run),
+      requireApproval: true, lastRunAt: String(row.last_run_at), nextRunAt: String(row.next_run_at), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    };
+  }
+
+  private validateAutomationLimits(intervalMinutes: number, maxActionsPerRun: number): void {
+    if (!Number.isInteger(intervalMinutes) || intervalMinutes < 15 || intervalMinutes > 10_080) throw new Error("Automation interval must be between 15 minutes and 7 days.");
+    if (!Number.isInteger(maxActionsPerRun) || maxActionsPerRun < 1 || maxActionsPerRun > 5) throw new Error("Action budget must be between 1 and 5 prepared moves per run.");
+  }
+
   applyDistributionPlan(plan: DistributionPlan): PlanApplication {
     const context = this.getProductContext(plan.productId);
     const evidenceByLabel = new Map<string, string[]>();
@@ -914,6 +1486,7 @@ export class DistributionDatabase {
       audienceSignals,
       recentEvents,
       harnessRuns: this.getRecentHarnessRuns(),
+      automation: this.getAutomationState(),
     };
   }
 
@@ -946,6 +1519,7 @@ export class DistributionDatabase {
       SET status = ?, draft_copy = COALESCE(?, draft_copy), scheduled_for = CASE WHEN ? = 'approved' THEN datetime('now', '+1 day') ELSE NULL END
       WHERE id = ?
     `).run(nextStatus, draftCopy?.trim() || null, nextStatus, id);
+    this.reconcileAutomationApprovalState(id);
     this.recordEvent(
       `opportunity.${action}`,
       "opportunity",
@@ -954,6 +1528,29 @@ export class DistributionDatabase {
       { previousStatus: row.status, nextStatus },
     );
     return nextStatus;
+  }
+
+  private reconcileAutomationApprovalState(opportunityId: string): void {
+    const rows = this.database.prepare(`
+      SELECT id, status, created_opportunity_ids_json FROM automation_runs
+      WHERE created_opportunity_ids_json LIKE ?
+    `).all(`%${opportunityId}%`) as Row[];
+    for (const row of rows) {
+      let ids: string[] = [];
+      try { ids = JSON.parse(String(row.created_opportunity_ids_json)) as string[]; } catch { ids = []; }
+      if (!ids.includes(opportunityId) || !ids.length) continue;
+      const placeholders = ids.map(() => "?").join(",");
+      const statuses = (this.database.prepare(`SELECT status FROM opportunities WHERE id IN (${placeholders})`).all(...ids) as Row[]).map((item) => String(item.status));
+      const awaiting = statuses.filter((status) => status === "ready").length;
+      const nextStatus = awaiting ? "waiting-approval" : "completed";
+      if (String(row.status) === nextStatus) continue;
+      const summary = awaiting
+        ? `${awaiting} prepared action${awaiting === 1 ? " is" : "s are"} waiting for human judgment.`
+        : `${ids.length} prepared action${ids.length === 1 ? " received" : "s received"} human decisions.`;
+      this.database.prepare("UPDATE automation_runs SET status = ?, summary = ?, completed_at = ? WHERE id = ?")
+        .run(nextStatus, summary, awaiting ? "" : now(), row.id);
+      this.recordEvent(`automation.run.${nextStatus}`, "automation-run", String(row.id), summary, { opportunityId });
+    }
   }
 
   recordOutcome(opportunityId: string, metric: string, value: number, note = ""): void {
