@@ -22,7 +22,7 @@ export const providerCatalog: ProviderCatalogEntry[] = [
   { id: "deepseek", name: "DeepSeek", category: "Direct", description: "DeepSeek models through its OpenAI-compatible API.", defaultBaseUrl: "https://api.deepseek.com", environmentVariables: ["DEEPSEEK_API_KEY"] },
   { id: "openrouter", name: "OpenRouter", category: "Gateway", description: "A broad provider and model catalog behind one API.", defaultBaseUrl: "https://openrouter.ai/api/v1", environmentVariables: ["OPENROUTER_API_KEY"] },
   { id: "groq", name: "Groq", category: "Gateway", description: "Low-latency hosted models through an OpenAI-compatible API.", defaultBaseUrl: "https://api.groq.com/openai/v1", environmentVariables: ["GROQ_API_KEY"] },
-  { id: "ollama", name: "Ollama", category: "Local", description: "Private models served by Ollama on this machine.", defaultBaseUrl: "http://127.0.0.1:11434", environmentVariables: [] },
+  { id: "ollama", name: "Ollama", category: "Local", description: "Private models served by Ollama on this machine.", defaultBaseUrl: "http://127.0.0.1:11434/v1", environmentVariables: [] },
   { id: "openai-compatible", name: "Custom endpoint", category: "Advanced", description: "LM Studio, vLLM, Together, Fireworks, xAI, or another compatible endpoint.", defaultBaseUrl: "", environmentVariables: ["DISTRIBUTION_OS_AI_API_KEY"] },
 ];
 
@@ -33,6 +33,11 @@ interface StoredModelProfile {
   model: string;
   baseUrl: string;
   credentialSource: "environment" | "keychain" | "none";
+}
+
+export interface ResolvedModelExecution {
+  profile: StoredModelProfile;
+  apiKey: string;
 }
 
 interface StoredSettings {
@@ -199,6 +204,35 @@ export class AIControlPlaneStore {
       runtimes,
       execution: settings.execution,
     };
+  }
+
+  async getActiveModelExecution(): Promise<ResolvedModelExecution | null> {
+    const settings = await this.readSettings();
+    if (settings.execution.runtimeId !== "native") return null;
+    return this.resolveModelExecution(settings);
+  }
+
+  private async resolveModelExecution(settings: StoredSettings, profileId = settings.execution.modelProfileId): Promise<ResolvedModelExecution | null> {
+    if (!profileId) return null;
+    const profile = settings.profiles.find((item) => item.id === profileId);
+    if (!profile) return null;
+    const localWithoutCredential = profile.provider === "ollama"
+      || (profile.provider === "openai-compatible" && ["127.0.0.1", "localhost", "::1"].includes(new URL(profile.baseUrl).hostname));
+    const apiKey = environmentCredential(profile.provider) || await this.keychainRead(profile.id) || "";
+    if (!localWithoutCredential && !apiKey) return null;
+    return { profile, apiKey };
+  }
+
+  async getConfiguredModelExecution(): Promise<ResolvedModelExecution | null> {
+    return this.resolveModelExecution(await this.readSettings());
+  }
+
+  async getModelExecution(profileId: string): Promise<ResolvedModelExecution | null> {
+    return this.resolveModelExecution(await this.readSettings(), profileId);
+  }
+
+  async getExecutionProfile(): Promise<AIExecutionProfile> {
+    return (await this.readSettings()).execution;
   }
 
   async saveModelProfile(input: { id?: string; name?: string; provider?: string; model?: string; baseUrl?: string; apiKey?: string; activate?: boolean }): Promise<AIControlPlane> {

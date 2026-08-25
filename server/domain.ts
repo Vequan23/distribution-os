@@ -1,10 +1,14 @@
 export type ChannelMode = "draft" | "approval" | "autopilot";
 export type OpportunityStatus = "ready" | "approved" | "skipped" | "published";
 export type OnboardingSourceType = "text" | "url" | "document" | "repository";
-export type EvidenceClassification = "intent" | "public-claim" | "implementation" | "outcome";
+export type EvidenceClassification = "intent" | "public-claim" | "implementation" | "audience-signal" | "outcome";
 export type ModelProviderId = "openai" | "anthropic" | "google" | "deepseek" | "openrouter" | "groq" | "ollama" | "openai-compatible";
 export type AgentRuntimeId = "native" | "claude-code" | "cursor" | "opencode" | "codex";
 export type RuntimeAvailability = "available" | "setup-required" | "missing";
+export type AnalysisMode = "local" | "ai" | "fallback";
+export type HarnessRunKind = "onboarding" | "distribution-plan" | "runtime-task";
+export type HarnessRunStatus = "running" | "completed" | "failed" | "fallback";
+export type HarnessStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
 export interface ProviderCatalogEntry {
   id: ModelProviderId;
@@ -91,6 +95,11 @@ export interface Evidence {
   confidence: number;
 }
 
+export interface AudienceSignal extends Evidence {
+  productId: string;
+  productName: string;
+}
+
 export interface OnboardingSourceInput {
   type: OnboardingSourceType;
   label: string;
@@ -142,6 +151,63 @@ export interface ProductBriefDraft {
     classification: EvidenceClassification;
     count: number;
   }>;
+  analysis: {
+    mode: AnalysisMode;
+    runId: string | null;
+    provider: string;
+    model: string;
+    warning: string;
+  };
+}
+
+export interface HarnessStep {
+  id: string;
+  runId: string;
+  sequence: number;
+  name: string;
+  status: HarnessStepStatus;
+  detail: string;
+  startedAt: string;
+  completedAt: string;
+}
+
+export interface HarnessRun {
+  id: string;
+  kind: HarnessRunKind;
+  productId: string;
+  runtimeId: AgentRuntimeId;
+  provider: string;
+  model: string;
+  status: HarnessRunStatus;
+  summary: string;
+  error: string;
+  createdAt: string;
+  completedAt: string;
+  steps: HarnessStep[];
+}
+
+export interface DistributionPlanMove {
+  channelId: string;
+  type: "owned-post" | "community-contribution" | "durable-content";
+  title: string;
+  whyNow: string;
+  suggestedAngle: string;
+  draftCopy: string;
+  citationLabels: string[];
+  relevanceScore: number;
+  valueScore: number;
+  freshnessScore: number;
+  promotionRisk: number;
+}
+
+export interface DistributionPlan {
+  runId: string;
+  productId: string;
+  summary: string;
+  assumptions: string[];
+  moves: DistributionPlanMove[];
+  mode: AnalysisMode;
+  warning: string;
 }
 
 export interface Opportunity {
@@ -198,7 +264,9 @@ export interface DashboardState {
   products: Product[];
   channels: Channel[];
   opportunities: Opportunity[];
+  audienceSignals: AudienceSignal[];
   recentEvents: DistributionEvent[];
+  harnessRuns: HarnessRun[];
 }
 
 export interface OpportunityScoreInput {

@@ -231,6 +231,12 @@ function audienceCandidate(body: string): string {
   return "Needs founder confirmation";
 }
 
+function productNameCandidate(body: string): string {
+  const candidate = body.match(/\b([A-Z][\w-]+(?:\s+[A-Z][\w-]+){0,3})\s+(?:is|helps|gives|turns|enables|provides|lets)\b/)?.[1]?.trim() || "";
+  if (["This", "The", "Our", "It"].includes(candidate)) return "";
+  return candidate;
+}
+
 export function buildProductBrief(sources: IngestedSource[]): ProductBriefDraft {
   if (!sources.length) throw new Error("A product brief needs at least one readable source.");
   const repository = sources.find((source) => source.type === "repository");
@@ -239,9 +245,11 @@ export function buildProductBrief(sources: IngestedSource[]): ProductBriefDraft 
   const body = sources.map((source) => `${source.label}\n${source.excerpt}`).join("\n\n");
 
   const packageName = packageValue(body, "name");
-  const nameValue = displayName(packageName || primary.label) || "Untitled product";
+  const genericLabel = /^(paste context|founder-provided context|product source|uploaded document)$/i.test(primary.label.trim());
+  const inferredName = genericLabel ? productNameCandidate(sources.map((source) => source.excerpt).join("\n")) : "";
+  const nameValue = displayName(packageName || inferredName || primary.label) || "Untitled product";
   const nameSources = packageName ? sources.filter((source) => source.excerpt.includes(packageName)).map((source) => source.label) : [primary.label];
-  const name = field(nameValue, packageName ? 90 : repository ? 76 : 58, nameSources, !packageName && !repository);
+  const name = field(nameValue, packageName ? 90 : inferredName ? 72 : repository ? 76 : 58, nameSources, !packageName && !inferredName && !repository);
 
   const packageDescription = packageValue(body, "description");
   const descriptionValue = packageDescription || primary.summary.replace(/\s+(Scanned|Imported through).*$/i, "");
@@ -273,5 +281,6 @@ export function buildProductBrief(sources: IngestedSource[]): ProductBriefDraft 
     overallConfidence,
     sourceCount: sources.length,
     evidenceClasses: [...evidenceCounts].map(([classification, count]) => ({ classification, count })),
+    analysis: { mode: "local", runId: null, provider: "", model: "", warning: "" },
   };
 }

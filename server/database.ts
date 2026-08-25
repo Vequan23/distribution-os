@@ -5,10 +5,16 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
   scoreOpportunity,
+  type AudienceSignal,
   type Channel,
   type DashboardState,
   type DistributionEvent,
+  type DistributionPlan,
   type Evidence,
+  type HarnessRun,
+  type HarnessRunKind,
+  type HarnessRunStatus,
+  type HarnessStepStatus,
   type IngestedSource,
   type OnboardProductInput,
   type Opportunity,
@@ -127,12 +133,41 @@ export class DistributionDatabase {
         occurred_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS harness_runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        product_id TEXT NOT NULL DEFAULT '',
+        runtime_id TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS harness_steps (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES harness_runs(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT ''
+      );
+
       CREATE INDEX IF NOT EXISTS opportunities_status_score_idx
         ON opportunities(status, score DESC, discovered_at DESC);
       CREATE INDEX IF NOT EXISTS evidence_product_idx
         ON evidence(product_id, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS events_recent_idx
         ON events(occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS harness_runs_recent_idx
+        ON harness_runs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS harness_steps_run_idx
+        ON harness_steps(run_id, sequence);
     `);
 
     this.addColumn("products", "audience", "TEXT NOT NULL DEFAULT ''");
@@ -283,6 +318,155 @@ export class DistributionDatabase {
     }
   }
 
+  getProductContext(productId: string): { product: Product; evidence: Evidence[]; channels: Channel[] } {
+    const row = this.database.prepare(`
+      SELECT p.*, COUNT(e.id) AS evidence_count
+      FROM products p LEFT JOIN evidence e ON e.product_id = p.id
+      WHERE p.id = ? AND p.is_demo = 0 GROUP BY p.id
+    `).get(productId) as Row | undefined;
+    if (!row) throw new Error("Product not found");
+    const product: Product = {
+      id: String(row.id), name: String(row.name), description: String(row.description), stage: String(row.stage),
+      repositoryUrl: String(row.repository_url), websiteUrl: String(row.website_url), evidenceCount: Number(row.evidence_count),
+      audience: String(row.audience), objective: String(row.objective), positioning: String(row.positioning),
+      confidence: Number(row.confidence), onboardingStatus: String(row.onboarding_status) as Product["onboardingStatus"],
+    };
+    const evidence = (this.database.prepare(`
+      SELECT id, kind, title, summary, source_url, occurred_at, source_type, classification, confidence
+      FROM evidence WHERE product_id = ? ORDER BY occurred_at DESC
+    `).all(productId) as Row[]).map((item): Evidence => ({
+      id: String(item.id), kind: String(item.kind), title: String(item.title), summary: String(item.summary),
+      sourceUrl: String(item.source_url), occurredAt: String(item.occurred_at), sourceType: String(item.source_type) as Evidence["sourceType"],
+      classification: String(item.classification) as Evidence["classification"], confidence: Number(item.confidence),
+    }));
+    const channels = (this.database.prepare("SELECT * FROM channels ORDER BY connected DESC, name").all() as Row[]).map((item): Channel => ({
+      id: String(item.id), name: String(item.name), handle: String(item.handle), mode: String(item.mode) as Channel["mode"],
+      status: String(item.status) as Channel["status"], dailyLimit: Number(item.daily_limit), connected: Boolean(item.connected),
+    }));
+    return { product, evidence, channels };
+  }
+
+  addAudienceSignals(productId: string, sources: IngestedSource[]): number {
+    const context = this.getProductContext(productId);
+    if (!sources.length) throw new Error("Add at least one audience signal.");
+    const capturedAt = now();
+    const insert = this.database.prepare(`
+      INSERT INTO evidence (
+        id, product_id, kind, title, summary, source_url, occurred_at,
+        source_type, classification, confidence, payload_json
+      ) VALUES (?, ?, 'audience-signal', ?, ?, ?, ?, ?, 'audience-signal', ?, ?)
+    `);
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const source of sources.slice(0, 8)) {
+        insert.run(
+          randomUUID(), productId, source.label, source.summary, source.sourceUrl, capturedAt,
+          source.type, source.type === "url" ? Math.max(60, source.confidence) : Math.min(55, source.confidence),
+          JSON.stringify({ excerpt: source.excerpt }),
+        );
+      }
+      this.recordEvent("audience.signal.added", "product", productId, `${sources.length} audience signal${sources.length === 1 ? "" : "s"} added to ${context.product.name}.`, { labels: sources.map((source) => source.label) });
+      this.database.exec("COMMIT");
+      return sources.length;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  beginHarnessRun(input: { kind: HarnessRunKind; productId?: string; runtimeId: string; provider?: string; model?: string }): string {
+    const id = randomUUID();
+    this.database.prepare(`
+      INSERT INTO harness_runs (id, kind, product_id, runtime_id, provider, model, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'running', ?)
+    `).run(id, input.kind, input.productId || "", input.runtimeId, input.provider || "", input.model || "", now());
+    return id;
+  }
+
+  beginHarnessStep(runId: string, sequence: number, name: string, detail = ""): string {
+    const id = randomUUID();
+    this.database.prepare(`
+      INSERT INTO harness_steps (id, run_id, sequence, name, status, detail, started_at)
+      VALUES (?, ?, ?, ?, 'running', ?, ?)
+    `).run(id, runId, sequence, name, detail, now());
+    return id;
+  }
+
+  finishHarnessStep(stepId: string, status: Exclude<HarnessStepStatus, "pending" | "running">, detail = ""): void {
+    this.database.prepare("UPDATE harness_steps SET status = ?, detail = ?, completed_at = ? WHERE id = ?")
+      .run(status, detail, now(), stepId);
+  }
+
+  finishHarnessRun(runId: string, status: Exclude<HarnessRunStatus, "running">, summary = "", error = ""): void {
+    this.database.prepare("UPDATE harness_runs SET status = ?, summary = ?, error = ?, completed_at = ? WHERE id = ?")
+      .run(status, summary, error, now(), runId);
+  }
+
+  getHarnessRun(runId: string): HarnessRun {
+    const row = this.database.prepare("SELECT * FROM harness_runs WHERE id = ?").get(runId) as Row | undefined;
+    if (!row) throw new Error("Harness run not found");
+    const steps = (this.database.prepare("SELECT * FROM harness_steps WHERE run_id = ? ORDER BY sequence, started_at").all(runId) as Row[]).map((step) => ({
+      id: String(step.id), runId: String(step.run_id), sequence: Number(step.sequence), name: String(step.name),
+      status: String(step.status) as HarnessStepStatus, detail: String(step.detail), startedAt: String(step.started_at), completedAt: String(step.completed_at),
+    }));
+    return {
+      id: String(row.id), kind: String(row.kind) as HarnessRunKind, productId: String(row.product_id),
+      runtimeId: String(row.runtime_id) as HarnessRun["runtimeId"], provider: String(row.provider), model: String(row.model),
+      status: String(row.status) as HarnessRunStatus, summary: String(row.summary), error: String(row.error),
+      createdAt: String(row.created_at), completedAt: String(row.completed_at), steps,
+    };
+  }
+
+  getRecentHarnessRuns(limit = 12): HarnessRun[] {
+    const rows = this.database.prepare("SELECT id FROM harness_runs ORDER BY created_at DESC LIMIT ?").all(Math.max(1, Math.min(50, limit))) as Row[];
+    return rows.map((row) => this.getHarnessRun(String(row.id)));
+  }
+
+  applyDistributionPlan(plan: DistributionPlan): number {
+    const context = this.getProductContext(plan.productId);
+    const evidenceByLabel = new Map(context.evidence.map((item) => [item.title.toLowerCase(), item.id]));
+    const channelIds = new Set(context.channels.map((channel) => channel.id));
+    const createdAt = now();
+    const statement = this.database.prepare(`
+      INSERT INTO opportunities (
+        id, product_id, channel_id, type, title, context, why_now, suggested_angle, audience,
+        source_url, draft_copy, relevance_score, value_score, freshness_score, promotion_risk,
+        score, status, discovered_at, evidence_ids_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
+    `);
+    const existingStatement = this.database.prepare("SELECT id FROM opportunities WHERE product_id = ? AND channel_id = ? AND lower(title) = lower(?) LIMIT 1");
+    let inserted = 0;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const move of plan.moves.slice(0, 5)) {
+        if (!channelIds.has(move.channelId)) continue;
+        if (existingStatement.get(plan.productId, move.channelId, move.title)) continue;
+        const evidenceIds = move.citationLabels.flatMap((label) => {
+          const exact = evidenceByLabel.get(label.toLowerCase());
+          if (exact) return [exact];
+          const partial = context.evidence.find((item) => item.title.toLowerCase().includes(label.toLowerCase()) || label.toLowerCase().includes(item.title.toLowerCase()));
+          return partial ? [partial.id] : [];
+        });
+        if (!evidenceIds.length) continue;
+        statement.run(
+          randomUUID(), plan.productId, move.channelId, move.type, move.title,
+          `Generated by harness run ${plan.runId}. ${plan.summary}`, move.whyNow, move.suggestedAngle,
+          context.product.audience, context.evidence.find((item) => evidenceIds.includes(item.id))?.sourceUrl || "", move.draftCopy,
+          move.relevanceScore, move.valueScore, move.freshnessScore, move.promotionRisk,
+          scoreOpportunity({ relevance: move.relevanceScore, value: move.valueScore, freshness: move.freshnessScore, promotionRisk: move.promotionRisk }),
+          createdAt, JSON.stringify([...new Set(evidenceIds)]),
+        );
+        inserted += 1;
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    this.recordEvent("distribution.plan.generated", "product", plan.productId, `${inserted} cited distribution move${inserted === 1 ? "" : "s"} generated.`, { runId: plan.runId, mode: plan.mode });
+    return inserted;
+  }
+
   getDashboard(): DashboardState {
     const productRows = this.database.prepare(`
       SELECT p.*, COUNT(e.id) AS evidence_count
@@ -395,6 +579,19 @@ export class DistributionDatabase {
       occurredAt: String(row.occurred_at),
     }));
 
+    const audienceSignals = (this.database.prepare(`
+      SELECT e.id, e.kind, e.title, e.summary, e.source_url, e.occurred_at, e.source_type,
+             e.classification, e.confidence, e.product_id, p.name AS product_name
+      FROM evidence e JOIN products p ON p.id = e.product_id
+      WHERE e.kind = 'audience-signal' AND p.is_demo = 0
+      ORDER BY e.occurred_at DESC
+    `).all() as Row[]).map((row): AudienceSignal => ({
+      id: String(row.id), kind: String(row.kind), title: String(row.title), summary: String(row.summary),
+      sourceUrl: String(row.source_url), occurredAt: String(row.occurred_at), sourceType: String(row.source_type) as AudienceSignal["sourceType"],
+      classification: String(row.classification) as AudienceSignal["classification"], confidence: Number(row.confidence),
+      productId: String(row.product_id), productName: String(row.product_name),
+    }));
+
     return {
       generatedAt: now(),
       storage: { mode: "local", location: this.databasePath },
@@ -412,7 +609,9 @@ export class DistributionDatabase {
       products,
       channels,
       opportunities,
+      audienceSignals,
       recentEvents,
+      harnessRuns: this.getRecentHarnessRuns(),
     };
   }
 
@@ -434,6 +633,36 @@ export class DistributionDatabase {
       { previousStatus: row.status, nextStatus },
     );
     return nextStatus;
+  }
+
+  recordOutcome(opportunityId: string, metric: string, value: number, note = ""): void {
+    const allowed = new Set(["qualified-visits", "replies", "conversations", "signups", "stars", "revenue"]);
+    if (!allowed.has(metric)) throw new Error("Choose a supported outcome metric.");
+    if (!Number.isFinite(value) || value < 0 || value > 1_000_000_000) throw new Error("Outcome value must be a non-negative number.");
+    const opportunity = this.database.prepare("SELECT id, product_id, channel_id, title FROM opportunities WHERE id = ?").get(opportunityId) as Row | undefined;
+    if (!opportunity) throw new Error("Opportunity not found");
+    const capturedAt = now();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare("INSERT INTO outcomes (id, opportunity_id, metric, value, captured_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(randomUUID(), opportunityId, metric, value, capturedAt, JSON.stringify({ note: note.trim().slice(0, 500) }));
+      this.database.prepare("UPDATE opportunities SET status = 'published' WHERE id = ?").run(opportunityId);
+      this.recordEvent("outcome.recorded", "opportunity", opportunityId, `${metric} outcome recorded for ${String(opportunity.title)}: ${value}.`, { metric, value, channelId: opportunity.channel_id, note: note.trim().slice(0, 500) });
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getOutcomeMemory(productId: string): Array<{ channelId: string; metric: string; observations: number; total: number; average: number }> {
+    return (this.database.prepare(`
+      SELECT o.channel_id, r.metric, COUNT(*) AS observations, SUM(r.value) AS total, AVG(r.value) AS average
+      FROM outcomes r JOIN opportunities o ON o.id = r.opportunity_id
+      WHERE o.product_id = ? GROUP BY o.channel_id, r.metric ORDER BY observations DESC, total DESC
+    `).all(productId) as Row[]).map((row) => ({
+      channelId: String(row.channel_id), metric: String(row.metric), observations: Number(row.observations), total: Number(row.total), average: Number(row.average),
+    }));
   }
 
   recordRefresh(): void {

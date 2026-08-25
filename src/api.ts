@@ -1,4 +1,4 @@
-import type { AIControlPlane, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, ProductBriefDraft } from "../server/domain.ts";
+import type { AIControlPlane, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, ProductBriefDraft } from "../server/domain.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -44,6 +44,10 @@ export function activateModelProfile(id: string): Promise<AIControlPlane> {
   return request<AIControlPlane>(`/api/ai/profiles/${encodeURIComponent(id)}/activate`, { method: "POST", body: "{}" });
 }
 
+export function testModelProfile(id: string): Promise<{ ok: boolean; provider: string; model: string; durationMs: number }> {
+  return request<{ ok: boolean; provider: string; model: string; durationMs: number }>(`/api/ai/profiles/${encodeURIComponent(id)}/test`, { method: "POST", body: "{}" });
+}
+
 export function activateAgentRuntime(runtimeId: string, model = ""): Promise<AIControlPlane> {
   return request<AIControlPlane>("/api/ai/runtime", { method: "POST", body: JSON.stringify({ runtimeId, model }) });
 }
@@ -62,6 +66,20 @@ export function analyzeProduct(sources: OnboardingSourceInput[]): Promise<{ brie
   });
 }
 
+export function generateProductPlan(productId: string): Promise<{ plan: DistributionPlan; dashboard: DashboardState }> {
+  return request<{ plan: DistributionPlan; dashboard: DashboardState }>(`/api/products/${encodeURIComponent(productId)}/plan`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function addProductAudienceSignals(productId: string, sources: OnboardingSourceInput[]): Promise<{ count: number; dashboard: DashboardState }> {
+  return request<{ count: number; dashboard: DashboardState }>(`/api/products/${encodeURIComponent(productId)}/signals`, {
+    method: "POST",
+    body: JSON.stringify({ sources }),
+  });
+}
+
 export function decideOpportunity(
   id: string,
   action: "approve" | "skip" | "restore",
@@ -70,5 +88,12 @@ export function decideOpportunity(
   return request<DashboardState>(`/api/opportunities/${encodeURIComponent(id)}/decision`, {
     method: "POST",
     body: JSON.stringify({ action, draftCopy }),
+  });
+}
+
+export function recordOpportunityOutcome(id: string, input: { metric: string; value: number; note: string }): Promise<DashboardState> {
+  return request<DashboardState>(`/api/opportunities/${encodeURIComponent(id)}/outcomes`, {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }

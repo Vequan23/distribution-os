@@ -49,3 +49,14 @@ Signal Garden helps independent technical founders turn product evidence into me
   assert.equal(brief.stage, "early");
   assert.ok(brief.name.sourceLabels.includes("signal-garden"));
 });
+
+test("pasted context infers a named product instead of using the generic source label", async () => {
+  const sources = await ingestSources([{
+    type: "text",
+    label: "Paste context",
+    value: "Signal Garden helps independent technical founders turn product evidence into a calm distribution practice.",
+  }]);
+  const brief = buildProductBrief(sources);
+  assert.equal(brief.name.value, "Signal Garden");
+  assert.equal(brief.name.needsReview, false);
+});

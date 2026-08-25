@@ -280,6 +280,14 @@ function sourcesFor(field: ProductBriefField): string {
 
     <section v-else-if="step === 2 && brief" class="onboarding-panel">
       <div class="panel-heading"><div><p class="eyebrow">02 · GENERATED BRIEF</p><h2>Correct the machine’s interpretation.</h2></div><osx-badge :tone="confidenceTone(brief.overallConfidence)">{{ brief.overallConfidence }}% draft confidence</osx-badge></div>
+      <osx-alert
+        :tone="brief.analysis.mode === 'ai' ? 'success' : brief.analysis.mode === 'fallback' ? 'warning' : 'info'"
+        :title="brief.analysis.mode === 'ai' ? 'AI-synthesized and source-cited' : brief.analysis.mode === 'fallback' ? 'AI unavailable—local extraction used' : 'Local evidence extraction'"
+      >
+        {{ brief.analysis.mode === 'ai'
+          ? `${brief.analysis.provider} · ${brief.analysis.model}. Claims without valid source labels remain marked for review.`
+          : brief.analysis.warning || 'Configure a ready model API profile to add cited AI synthesis. The local extraction remains fully editable.' }}
+      </osx-alert>
       <osx-alert tone="info" title="A proposal, not product truth">Every field remains editable. Low-confidence fields require founder judgment before the brief can be approved.</osx-alert>
       <div class="form-grid generated-brief-grid">
         <label><span>Product name</span><input v-model="form.name" required /><small class="field-meta"><osx-badge :tone="confidenceTone(brief.name.confidence)" size="small">{{ brief.name.confidence }}%</osx-badge>{{ sourcesFor(brief.name) }}</small></label>

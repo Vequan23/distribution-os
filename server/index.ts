@@ -4,11 +4,17 @@ import { extname, join, normalize, resolve } from "node:path";
 import { DistributionDatabase } from "./database.ts";
 import { buildProductBrief, ingestSources } from "./ingestion.ts";
 import { AIControlPlaneStore } from "./ai-control-plane.ts";
+import { NativeModelExecutor } from "./model-executor.ts";
+import { synthesizeProductBrief } from "./onboarding-harness.ts";
+import { generateDistributionPlan } from "./distribution-harness.ts";
+import { AgentRuntimeExecutor } from "./runtime-executor.ts";
 import type { OnboardProductInput, OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
 const database = new DistributionDatabase();
 const aiControlPlane = new AIControlPlaneStore(database.dataDirectory);
+const modelExecutor = new NativeModelExecutor(aiControlPlane);
+const runtimeExecutor = new AgentRuntimeExecutor(aiControlPlane);
 const projectRoot = resolve(process.cwd());
 const distDirectory = join(projectRoot, "dist");
 
@@ -101,6 +107,12 @@ const server = createServer(async (request, response) => {
       json(response, 200, await aiControlPlane.activateModelProfile(decodeURIComponent(profileMatch[1])));
       return;
     }
+    const profileTestMatch = url.pathname.match(/^\/api\/ai\/profiles\/([^/]+)\/test$/);
+    if (request.method === "POST" && profileTestMatch) {
+      const result = await modelExecutor.testProfile(decodeURIComponent(profileTestMatch[1]));
+      json(response, 200, { ok: true, ...result });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/ai/runtime") {
       const body = await readJson(request);
       const result = await aiControlPlane.activateRuntime(String(body.runtimeId || ""), typeof body.model === "string" ? body.model : "");
@@ -134,7 +146,29 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/products/analyze") {
       const body = await readJson(request);
       const sources = await ingestSources(Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : []);
-      json(response, 200, { brief: buildProductBrief(sources) });
+      const localBrief = buildProductBrief(sources);
+      json(response, 200, { brief: await synthesizeProductBrief(sources, localBrief, modelExecutor, database) });
+      return;
+    }
+    const planMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/plan$/);
+    if (request.method === "POST" && planMatch) {
+      const plan = await generateDistributionPlan(decodeURIComponent(planMatch[1]), modelExecutor, runtimeExecutor, aiControlPlane, database);
+      json(response, 201, { plan, dashboard: database.getDashboard() });
+      return;
+    }
+    const signalMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/signals$/);
+    if (request.method === "POST" && signalMatch) {
+      const body = await readJson(request);
+      const inputs = Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : [];
+      if (inputs.some((source) => source.type !== "text" && source.type !== "url")) throw new Error("Audience signals must be pasted context or a public URL.");
+      const sources = await ingestSources(inputs);
+      const count = database.addAudienceSignals(decodeURIComponent(signalMatch[1]), sources);
+      json(response, 201, { count, dashboard: database.getDashboard() });
+      return;
+    }
+    const runMatch = url.pathname.match(/^\/api\/harness\/runs\/([^/]+)$/);
+    if (request.method === "GET" && runMatch) {
+      json(response, 200, { run: database.getHarnessRun(decodeURIComponent(runMatch[1])) });
       return;
     }
     const decisionMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/decision$/);
@@ -151,6 +185,18 @@ const server = createServer(async (request, response) => {
         typeof body.draftCopy === "string" ? body.draftCopy : undefined,
       );
       json(response, 200, database.getDashboard());
+      return;
+    }
+    const outcomeMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/outcomes$/);
+    if (request.method === "POST" && outcomeMatch) {
+      const body = await readJson(request);
+      database.recordOutcome(
+        decodeURIComponent(outcomeMatch[1]),
+        String(body.metric || ""),
+        Number(body.value),
+        typeof body.note === "string" ? body.note : "",
+      );
+      json(response, 201, database.getDashboard());
       return;
     }
     if (request.method === "GET" && serveStatic(url.pathname, response)) return;
