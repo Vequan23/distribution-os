@@ -381,7 +381,11 @@ export class DistributionDatabase {
         (SELECT COUNT(*) FROM channels WHERE connected = 1) AS connected_channels
     `).get() as Row;
 
-    const eventRows = this.database.prepare("SELECT * FROM events ORDER BY occurred_at DESC, id DESC LIMIT 8").all() as Row[];
+    const eventRows = this.database.prepare(`
+      SELECT * FROM events
+      WHERE NOT (event_type = 'system.initialized' AND detail LIKE 'Local distribution ledger initialized with two products%')
+      ORDER BY occurred_at DESC, id DESC LIMIT 8
+    `).all() as Row[];
     const recentEvents: DistributionEvent[] = eventRows.map((row) => ({
       id: Number(row.id),
       type: String(row.event_type),

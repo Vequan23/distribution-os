@@ -153,7 +153,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 
       <osx-alert v-else-if="error && !state" tone="danger" title="Local service unavailable">{{ error }}</osx-alert>
 
-      <ProductOnboarding v-else-if="state && (state.onboarding.required || view === 'onboarding')" :busy="onboardingBusy" :error="error" @submit="createProduct" />
+      <ProductOnboarding v-else-if="state && view === 'onboarding'" :busy="onboardingBusy" :error="error" @submit="createProduct" />
 
       <main v-else-if="state && view === 'command'" class="command-center">
         <osx-alert v-if="error" tone="danger" title="Action needs attention" dismissible @dismiss="error = ''">{{ error }}</osx-alert>
@@ -198,7 +198,11 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
               </div>
               <div class="opportunity-score"><strong>{{ opportunity.score }}</strong><span>FIT</span><osx-icon name="chevron-right" size="18"></osx-icon></div>
             </button>
-            <osx-empty-state v-if="!readyOpportunities.length" icon="check" title="Today's queue is clear">Approved and skipped work remains available in Campaigns and the Journal.</osx-empty-state>
+            <osx-empty-state v-if="!readyOpportunities.length && !state.products.length" icon="boxes" title="No product memory yet">
+              Add a product from a repository, URL, document, or pasted context before Distribution-OS recommends a move.
+              <osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button>
+            </osx-empty-state>
+            <osx-empty-state v-else-if="!readyOpportunities.length" icon="check" title="Today's queue is clear">Approved and skipped work remains available in Campaigns and the Journal.</osx-empty-state>
           </div>
         </section>
       </main>
@@ -212,17 +216,20 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             <dl class="product-brief"><div><dt>Audience</dt><dd>{{ product.audience }}</dd></div><div><dt>Objective</dt><dd>{{ product.objective }}</dd></div></dl>
             <footer><strong>{{ product.evidenceCount }} evidence items · {{ product.stage }}</strong><osx-link v-if="product.websiteUrl || product.repositoryUrl" :href="product.websiteUrl || product.repositoryUrl" external>Open source</osx-link></footer>
           </article>
-          <button class="add-product-card" @click="view = 'onboarding'"><osx-icon name="plus" size="24"></osx-icon><strong>Add another product</strong><span>Repository, URL, document, or pasted context</span></button>
+          <osx-empty-state v-if="!state.products.length" class="page-empty-state" icon="boxes" title="Product memory is empty">
+            Start with whatever explains the product today. Code is useful, but it is not required.
+            <osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Add the first product</osx-button>
+          </osx-empty-state>
+          <button v-else class="add-product-card" @click="view = 'onboarding'"><osx-icon name="plus" size="24"></osx-icon><strong>Add another product</strong><span>Repository, URL, document, or pasted context</span></button>
         </div>
       </main>
 
       <main v-else-if="state && view === 'audience'" class="workspace-page">
         <header><p class="eyebrow">AUDIENCE MAP</p><h1>Problems, people, and places.</h1><p>The system optimizes for relevance—not reach without context.</p></header>
-        <div class="audience-grid">
-          <article><osx-icon name="code" size="24"></osx-icon><h2>Agent UI builders</h2><p>Frontend engineers building streaming, tool-driven, approval-aware interfaces.</p><div><osx-badge>Vue</osx-badge><osx-badge>AI SDK</osx-badge><osx-badge>Design systems</osx-badge></div></article>
-          <article><osx-icon name="git-branch" size="24"></osx-icon><h2>AI-assisted engineering teams</h2><p>Developers who can generate working code faster than they can safely understand it.</p><div><osx-badge>GitHub</osx-badge><osx-badge>Developer tools</osx-badge><osx-badge>Code review</osx-badge></div></article>
-          <article><osx-icon name="sparkle" size="24"></osx-icon><h2>Technical product founders</h2><p>Builders who need durable distribution without becoming full-time creators.</p><div><osx-badge>LinkedIn</osx-badge><osx-badge>Bluesky</osx-badge><osx-badge>Dev.to</osx-badge></div></article>
+        <div v-if="state.products.length" class="audience-grid">
+          <article v-for="product in state.products" :key="product.id"><osx-icon name="user" size="24"></osx-icon><h2>{{ product.audience }}</h2><p>{{ product.name }} is currently optimizing for: {{ product.objective }}</p><div><osx-badge>{{ product.stage }}</osx-badge><osx-badge tone="info">{{ product.confidence }}% evidence</osx-badge></div></article>
         </div>
+        <osx-empty-state v-else class="page-empty-state" icon="user" title="No audience has been established">Audience hypotheses appear only after a product has been onboarded and reviewed.<osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button></osx-empty-state>
       </main>
 
       <main v-else-if="state && view === 'campaigns'" class="workspace-page">
@@ -249,7 +256,8 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       <main v-else-if="state && view === 'journal'" class="workspace-page">
         <header><p class="eyebrow">DISTRIBUTION JOURNAL</p><h1>The system remembers what happened.</h1><p>Decisions, executions, outcomes, and lessons form the feedback loop.</p></header>
         <ol class="journal-list">
-          <li v-for="event in state.recentEvents" :key="event.id"><span class="timeline-dot"></span><time>{{ formatDate(event.occurredAt) }}<small>{{ formatTime(event.occurredAt) }}</small></time><div><strong>{{ event.type.replaceAll('.', ' ') }}</strong><p>{{ event.detail }}</p></div><osx-badge size="small">{{ event.entityType }}</osx-badge></li>
+          <li v-for="event in state.products.length ? state.recentEvents : []" :key="event.id"><span class="timeline-dot"></span><time>{{ formatDate(event.occurredAt) }}<small>{{ formatTime(event.occurredAt) }}</small></time><div><strong>{{ event.type.replaceAll('.', ' ') }}</strong><p>{{ event.detail }}</p></div><osx-badge size="small">{{ event.entityType }}</osx-badge></li>
+          <osx-empty-state v-if="!state.products.length || !state.recentEvents.length" icon="book" title="The journal is empty">Product onboarding, decisions, executions, and measured outcomes will appear here in chronological order.</osx-empty-state>
         </ol>
       </main>
 
@@ -262,37 +270,43 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </section>
       </main>
 
-      <aside v-if="selected && view === 'command'" slot="inspector" class="inspector-panel">
-        <header>
+      <aside v-if="view === 'command'" slot="inspector" :class="['inspector-panel', { empty: !selected }]">
+        <template v-if="selected">
+          <header>
           <div><p class="eyebrow">MOVE INSPECTOR</p><h2>{{ selected.channelName }}</h2></div>
           <osx-badge :tone="selected.promotionRisk < 15 ? 'success' : 'warning'">{{ selected.promotionRisk }} risk</osx-badge>
-        </header>
-        <section class="reason-card"><h3>Why now</h3><p>{{ selected.whyNow }}</p></section>
-        <section class="reason-card"><h3>Contribution angle</h3><p>{{ selected.suggestedAngle }}</p><small>{{ selected.audience }}</small></section>
-        <section class="score-panel">
-          <h3>Decision signals</h3>
-          <div><span>Relevance</span><osx-progress :value="selected.relevanceScore" max="100"></osx-progress><b>{{ selected.relevanceScore }}</b></div>
-          <div><span>Audience value</span><osx-progress :value="selected.valueScore" max="100"></osx-progress><b>{{ selected.valueScore }}</b></div>
-          <div><span>Freshness</span><osx-progress :value="selected.freshnessScore" max="100"></osx-progress><b>{{ selected.freshnessScore }}</b></div>
-        </section>
-        <section class="evidence-panel">
-          <h3>What proves it</h3>
-          <template v-for="item in selected.evidence" :key="item.id">
-            <a v-if="item.sourceUrl" :href="item.sourceUrl" target="_blank" rel="noreferrer"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-icon name="external" size="14"></osx-icon></a>
-            <div v-else class="evidence-static"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-badge size="small">{{ item.classification }}</osx-badge></div>
-          </template>
-        </section>
-        <section class="draft-panel">
-          <div><h3>Proposed contribution</h3><osx-badge size="small">Editable</osx-badge></div>
-          <textarea v-model="draft" aria-label="Proposed contribution draft"></textarea>
-        </section>
-        <footer class="decision-bar">
-          <osx-button size="small" :disabled="actionBusy" @click="decide('skip')">Skip for now</osx-button>
-          <osx-button variant="primary" icon="check" :loading="actionBusy" @click="decide('approve')">Approve & queue</osx-button>
-        </footer>
+          </header>
+          <section class="reason-card"><h3>Why now</h3><p>{{ selected.whyNow }}</p></section>
+          <section class="reason-card"><h3>Contribution angle</h3><p>{{ selected.suggestedAngle }}</p><small>{{ selected.audience }}</small></section>
+          <section class="score-panel">
+            <h3>Decision signals</h3>
+            <div><span>Relevance</span><osx-progress :value="selected.relevanceScore" max="100"></osx-progress><b>{{ selected.relevanceScore }}</b></div>
+            <div><span>Audience value</span><osx-progress :value="selected.valueScore" max="100"></osx-progress><b>{{ selected.valueScore }}</b></div>
+            <div><span>Freshness</span><osx-progress :value="selected.freshnessScore" max="100"></osx-progress><b>{{ selected.freshnessScore }}</b></div>
+          </section>
+          <section class="evidence-panel">
+            <h3>What proves it</h3>
+            <template v-for="item in selected.evidence" :key="item.id">
+              <a v-if="item.sourceUrl" :href="item.sourceUrl" target="_blank" rel="noreferrer"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-icon name="external" size="14"></osx-icon></a>
+              <div v-else class="evidence-static"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-badge size="small">{{ item.classification }}</osx-badge></div>
+            </template>
+          </section>
+          <section class="draft-panel">
+            <div><h3>Proposed contribution</h3><osx-badge size="small">Editable</osx-badge></div>
+            <textarea v-model="draft" aria-label="Proposed contribution draft"></textarea>
+          </section>
+          <footer class="decision-bar">
+            <osx-button size="small" :disabled="actionBusy" @click="decide('skip')">Skip for now</osx-button>
+            <osx-button variant="primary" icon="check" :loading="actionBusy" @click="decide('approve')">Approve & queue</osx-button>
+          </footer>
+        </template>
+        <osx-empty-state v-else icon="search" title="Nothing to inspect">
+          Select a recommended move to review its evidence and draft. Onboard a product first if the queue is empty.
+          <osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button>
+        </osx-empty-state>
       </aside>
 
-      <osx-status-bar slot="status" :label="state ? 'Local ledger ready' : 'Starting local ledger'" :status="error ? 'offline' : loading ? 'working' : 'ready'" :detail="state ? `Updated ${formatTime(state.generatedAt)}` : ''">
+      <osx-status-bar slot="status" :label="state?.onboarding.required ? 'Product onboarding required' : state ? 'Local ledger ready' : 'Starting local ledger'" :status="error ? 'offline' : loading ? 'working' : 'ready'" :detail="state ? `Updated ${formatTime(state.generatedAt)}` : ''">
         <span v-if="state">· Human approval required for public actions</span>
       </osx-status-bar>
     </osx-app-shell>
