@@ -32,9 +32,21 @@ export function missingRequiredPlanningTools(toolNames: Iterable<string>): strin
   return REQUIRED_PLANNING_TOOLS.filter((name) => !called.has(name));
 }
 
+function stripTerminalPunctuation(value: string): string {
+  return value.trim().replace(/[.!?]+$/g, "");
+}
+
+export function evidencePriority(item: { title: string; classification: string; confidence: number }): number {
+  const classificationWeight: Record<string, number> = { outcome: 36, implementation: 30, "public-claim": 22, intent: 16, "audience-signal": 8 };
+  const title = item.title.toLowerCase();
+  const productSignal = /readme|product|brief|architecture|overview/.test(title) ? 12 : 0;
+  const policyPenalty = /code of conduct|contributing|license|security policy/.test(title) ? 30 : 0;
+  return item.confidence + (classificationWeight[item.classification] || 0) + productSignal - policyPenalty;
+}
+
 export function localFallbackPlan(database: DistributionDatabase, productId: string, runId: string, warning: string): DistributionPlan {
   const { product, evidence } = database.getProductContext(productId);
-  const primary = evidence.find((item) => item.kind !== "audience-signal");
+  const primary = evidence.filter((item) => item.kind !== "audience-signal").sort((left, right) => evidencePriority(right) - evidencePriority(left))[0];
   const audienceSignal = evidence.find((item) => item.kind === "audience-signal");
   if (!primary) throw new Error("A distribution plan requires product evidence.");
   const move: DistributionPlanMove = {
@@ -43,7 +55,7 @@ export function localFallbackPlan(database: DistributionDatabase, productId: str
     title: `Explain the problem behind ${product.name}`,
     whyNow: audienceSignal ? `A founder-supplied audience signal provides a concrete conversation to respond to: ${audienceSignal.summary}` : "The product brief is approved, but its problem statement has not yet been tested with the intended audience.",
     suggestedAngle: product.positioning || `Describe the problem ${product.name} addresses and ask the audience where the framing is incomplete.`,
-    draftCopy: `${product.name} is being built for ${product.audience}.\n\n${product.description}\n\nThe next question is simple: ${product.objective}.\n\nWhat part of this problem is most costly or frustrating today?`,
+    draftCopy: `${stripTerminalPunctuation(product.description)}.\n\nI am testing this with ${stripTerminalPunctuation(product.audience).toLowerCase()}. The immediate learning goal is to ${stripTerminalPunctuation(product.objective).replace(/^to\s+/i, "")}.\n\nWhere does this problem become most costly or frustrating in practice?`,
     citationLabels: [...new Set(audienceSignal ? [primary.title, audienceSignal.title] : [primary.title])],
     relevanceScore: Math.max(55, product.confidence), valueScore: 76, freshnessScore: 80, promotionRisk: 24,
   };
@@ -68,7 +80,7 @@ export async function generateDistributionPlan(
   runtimeExecutor: AgentRuntimeExecutor,
   controlPlane: AIControlPlaneStore,
   database: DistributionDatabase,
-  options: { maxMoves?: number } = {},
+  options: { maxMoves?: number; signal?: AbortSignal } = {},
 ): Promise<{ plan: DistributionPlan; application: PlanApplication }> {
   const maxMoves = Math.max(1, Math.min(5, Math.trunc(options.maxMoves ?? 3)));
   const execution = await controlPlane.getExecutionProfile();
@@ -79,6 +91,14 @@ export async function generateDistributionPlan(
   const context = database.getProductContext(productId);
   const productEvidence = context.evidence.filter((item) => item.kind !== "audience-signal");
   const audienceSignals = context.evidence.filter((item) => item.kind === "audience-signal");
+  const sourceCitedMoves = (output: z.infer<typeof planSchema>): DistributionPlanMove[] => {
+    const evidenceLabels = new Set(context.evidence.map((item) => item.title));
+    const productLabels = new Set(productEvidence.map((item) => item.title));
+    return output.moves
+      .map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] }))
+      .filter((move) => move.citationLabels.some((label) => productLabels.has(label)))
+      .slice(0, maxMoves);
+  };
   if (execution.runtimeId !== "native") {
     try {
       const runtimeResult = await runtimeExecutor.generateObject({
@@ -95,10 +115,9 @@ export async function generateDistributionPlan(
           "Return keys: summary, assumptions, moves. Each move requires channelId, type, title, whyNow, suggestedAngle, draftCopy, citationLabels, relevanceScore, valueScore, freshnessScore, promotionRisk.",
           `Use at most ${maxMoves} moves and cite evidence titles exactly. Prefer useful contributions and learning over reach. Never describe an audience signal as live, representative, or independently verified.`,
         ].join(" "),
+        signal: options.signal,
       });
-      const evidenceLabels = new Set(context.evidence.map((item) => item.title));
-      const productLabels = new Set(productEvidence.map((item) => item.title));
-      const moves = runtimeResult.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label))).slice(0, maxMoves);
+      const moves = sourceCitedMoves(runtimeResult.output);
       if (!moves.length) throw new Error("The runtime did not return any source-cited distribution moves.");
       const plan: DistributionPlan = { runId, productId, summary: runtimeResult.output.summary, assumptions: runtimeResult.output.assumptions, moves, mode: "ai", warning: "" };
       database.finishHarnessStep(planStep, "completed", `${runtimeResult.runtimeId} completed ${runtimeResult.activityCount} activity event${runtimeResult.activityCount === 1 ? "" : "s"} in ${runtimeResult.durationMs}ms after ${runtimeResult.attempts} attempt${runtimeResult.attempts === 1 ? "" : "s"} and returned ${moves.length} cited move${moves.length === 1 ? "" : "s"}.`);
@@ -107,7 +126,11 @@ export async function generateDistributionPlan(
       return { plan, application };
     } catch (error) {
       const failure = safeHarnessFailure(error, execution.runtimeId);
-      database.finishHarnessStep(planStep, "failed", failure.message);
+      database.finishHarnessStep(planStep, "failed", `${failure.message} ${failure.diagnostic}`);
+      if (options.signal?.aborted) {
+        database.finishHarnessRun(runId, "failed", "The planning run was cancelled before it produced reviewable work.", failure.message);
+        throw error;
+      }
       const fallback = localFallbackPlan(database, productId, runId, `${failure.message} A conservative local plan was used instead.`);
       const application = database.applyDistributionPlan(fallback);
       database.finishHarnessRun(runId, "fallback", fallback.summary, fallback.warning.slice(0, 1_000));
@@ -172,12 +195,14 @@ export async function generateDistributionPlan(
   });
 
   try {
-    const result = await agent.generate({ prompt: `Build the next distribution plan for product ${productId}. Read product memory, evidence, audience signals, channel policies, and outcome memory before deciding.` });
+    if (options.signal?.aborted) throw new DOMException("The planning run was cancelled.", "AbortError");
+    const result = await agent.generate({
+      prompt: `Build the next distribution plan for product ${productId}. Read product memory, evidence, audience signals, channel policies, and outcome memory before deciding.`,
+      abortSignal: options.signal,
+    });
     const missingTools = missingRequiredPlanningTools(result.toolCalls.map((call) => call.toolName));
     if (missingTools.length) throw new Error(`Required planning tools were not called: ${missingTools.join(", ")}`);
-    const evidenceLabels = new Set(context.evidence.map((item) => item.title));
-    const productLabels = new Set(productEvidence.map((item) => item.title));
-    const moves = result.output.moves.map((move) => ({ ...move, citationLabels: [...new Set(move.citationLabels.filter((label) => evidenceLabels.has(label)))] })).filter((move) => move.citationLabels.some((label) => productLabels.has(label))).slice(0, maxMoves);
+    const moves = sourceCitedMoves(result.output);
     if (!moves.length) throw new Error("The agent did not return any source-cited distribution moves.");
     const plan: DistributionPlan = { runId, productId, summary: result.output.summary, assumptions: result.output.assumptions, moves, mode: "ai", warning: "" };
     const steps = result.steps as Array<{ toolCalls?: Array<{ toolName?: string }>; toolResults?: unknown[]; text?: string }>;
@@ -193,7 +218,36 @@ export async function generateDistributionPlan(
     return { plan, application };
   } catch (error) {
     const failure = safeHarnessFailure(error, "The native planning agent");
-    database.finishHarnessStep(planStep, "failed", failure.message);
+    database.finishHarnessStep(planStep, "failed", `${failure.message} ${failure.diagnostic}`);
+    if (options.signal?.aborted) {
+      database.finishHarnessRun(runId, "failed", "The planning run was cancelled before it produced reviewable work.", failure.message);
+      throw error;
+    }
+    if (failure.kind === "invalid-output" && !options.signal?.aborted) {
+      const repairStep = database.beginHarnessStep(runId, 2, "Repair structured plan", "The tool-loop result missed the contract, so one schema-focused repair is running against the same bounded evidence.");
+      try {
+        const repaired = await executor.generateObject({
+          schema: planSchema,
+          instructions: "Return one complete distribution plan using only the supplied bounded evidence. Every move must cite an exact product evidence title. Do not invent demand, trends, outcomes, or channel access.",
+          prompt: JSON.stringify({ product: context.product, productEvidence, audienceSignals, channels: context.channels, outcomes: database.getOutcomeMemory(productId), maxMoves }),
+          signal: options.signal,
+        });
+        const moves = sourceCitedMoves(repaired.output);
+        if (!moves.length) throw new Error("The repaired plan did not cite supporting product evidence.");
+        const plan: DistributionPlan = { runId, productId, summary: repaired.output.summary, assumptions: repaired.output.assumptions, moves, mode: "ai", warning: "" };
+        database.finishHarnessStep(repairStep, "completed", `${repaired.provider}/${repaired.model} repaired the plan contract after ${repaired.attempts} structured attempt${repaired.attempts === 1 ? "" : "s"}.`);
+        const application = database.applyDistributionPlan(plan);
+        database.finishHarnessRun(runId, "completed", `${application.insertedCount} new cited move${application.insertedCount === 1 ? "" : "s"} added after structured repair.`);
+        return { plan, application };
+      } catch (repairError) {
+        const repairFailure = safeHarnessFailure(repairError, "The structured repair");
+        database.finishHarnessStep(repairStep, "failed", `${repairFailure.message} ${repairFailure.diagnostic}`);
+        if (options.signal?.aborted) {
+          database.finishHarnessRun(runId, "failed", "The planning run was cancelled during structured repair.", repairFailure.message);
+          throw repairError;
+        }
+      }
+    }
     const fallback = localFallbackPlan(database, productId, runId, `${failure.message} A conservative local plan was used instead.`);
     const application = database.applyDistributionPlan(fallback);
     database.finishHarnessRun(runId, "fallback", fallback.summary, fallback.warning.slice(0, 1_000));

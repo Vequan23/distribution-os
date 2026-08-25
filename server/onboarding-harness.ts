@@ -107,8 +107,8 @@ export async function synthesizeProductBrief(
     return result;
   } catch (error) {
     const failure = safeHarnessFailure(error, `${descriptor.provider}/${descriptor.model}`);
-    database.finishHarnessStep(synthesisStep, "failed", failure.message);
-    database.finishHarnessRun(runId, "fallback", "Local extraction returned after AI synthesis failed.", failure.message);
+    database.finishHarnessStep(synthesisStep, "failed", `${failure.message} ${failure.diagnostic}`);
+    database.finishHarnessRun(runId, "fallback", "Local extraction returned after AI synthesis failed.", `${failure.message} ${failure.diagnostic}`);
     return { ...local, analysis: { mode: "fallback", runId, provider: descriptor.provider, model: descriptor.model, warning: `AI synthesis was unavailable, so Distribution-OS returned the local evidence extraction. ${failure.message}` } };
   }
 }

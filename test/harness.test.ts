@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { AIControlPlaneStore } from "../server/ai-control-plane.ts";
 import { DistributionDatabase } from "../server/database.ts";
-import { generateDistributionPlan, localFallbackPlan, missingRequiredPlanningTools, planSchema } from "../server/distribution-harness.ts";
+import { evidencePriority, generateDistributionPlan, localFallbackPlan, missingRequiredPlanningTools, planSchema } from "../server/distribution-harness.ts";
 import { missingRequiredDraftTools, writeContributionDraft } from "../server/contribution-harness.ts";
 import { buildProductBrief } from "../server/ingestion.ts";
 import type { NativeModelExecutor } from "../server/model-executor.ts";
@@ -32,6 +32,26 @@ function seedProduct(database: DistributionDatabase): string {
     confidence: 52,
   }]);
 }
+
+test("fallback planning prefers substantive evidence and emits clean human copy", () => {
+  assert.ok(
+    evidencePriority({ title: "README product overview", classification: "implementation", confidence: 88 })
+      > evidencePriority({ title: "Code of Conduct", classification: "implementation", confidence: 88 }),
+  );
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-fallback-copy-"));
+  const database = new DistributionDatabase(directory);
+  try {
+    const productId = database.onboardProduct({
+      name: "Aperta", description: "A harness for understanding generated code.", stage: "early", audience: "Developers.", objective: "Test the ownership loop?", positioning: "Evidence before confidence.", sources: [],
+    }, [{ type: "text", label: "Founder brief", sourceUrl: "", summary: "Developers need evidence for generated code.", excerpt: "Developers need evidence for generated code.", classification: "intent", confidence: 52 }]);
+    const plan = localFallbackPlan(database, productId, "run-1", "Local fallback.");
+    assert.doesNotMatch(plan.moves[0]?.draftCopy ?? "", /\.\.|\?\./);
+    assert.match(plan.moves[0]?.draftCopy ?? "", /immediate learning goal is to test the ownership loop/i);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("onboarding AI synthesis accepts only exact evidence labels and records its run", async () => {
   const directory = mkdtempSync(join(tmpdir(), "distribution-os-harness-"));
@@ -237,6 +257,30 @@ test("runtime failures persist only normalized diagnostics", async () => {
     const persisted = JSON.stringify(database.getHarnessRun(result.plan.runId));
     assert.doesNotMatch(`${result.plan.warning}\n${persisted}`, /customer@example\.com|private prompt/i);
     assert.match(result.plan.warning, /failed before producing a reviewable result/i);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("cancelling a planning run never creates fallback work", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-cancelled-run-"));
+  const database = new DistributionDatabase(directory);
+  const controlPlane = new AIControlPlaneStore(directory, async () => ({ stdout: "opencode 1.0.0", stderr: "" }));
+  try {
+    const productId = seedProduct(database);
+    const before = database.getDashboard().opportunities.length;
+    await controlPlane.activateRuntime("opencode");
+    const runtimeExecutor = new AgentRuntimeExecutor(controlPlane, async () => ({ stdout: "", stderr: "" }));
+    const abortController = new AbortController();
+    abortController.abort();
+    await assert.rejects(
+      generateDistributionPlan(productId, {} as NativeModelExecutor, runtimeExecutor, controlPlane, database, { signal: abortController.signal }),
+    );
+    const dashboard = database.getDashboard();
+    assert.equal(dashboard.opportunities.length, before);
+    assert.equal(dashboard.harnessRuns[0]?.status, "failed");
+    assert.match(dashboard.harnessRuns[0]?.summary ?? "", /cancelled/i);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

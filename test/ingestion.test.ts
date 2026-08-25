@@ -24,6 +24,19 @@ test("onboarding distinguishes founder context from repository implementation ev
   }
 });
 
+test("repository evidence prioritizes product documentation over governance files", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-evidence-order-"));
+  try {
+    writeFileSync(join(directory, "CODE_OF_CONDUCT.md"), "# Community rules\nBe respectful and report unacceptable behavior.");
+    writeFileSync(join(directory, "README.md"), "# Aperta\nAperta helps developers verify and understand AI-generated code through local evidence and ownership sessions.");
+    const [source] = await ingestSources([{ type: "repository", label: "Aperta repository", value: directory }]);
+    assert.match(source?.summary ?? "", /verify and understand AI-generated code/i);
+    assert.doesNotMatch(source?.summary ?? "", /unacceptable behavior/i);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("repository folder bundles generate an editable, source-cited product brief", async () => {
   const repositoryBundle = Buffer.from(`
 --- signal-garden/package.json ---

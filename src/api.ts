@@ -120,8 +120,8 @@ export function activateAgentRuntime(runtimeId: string, model = ""): Promise<AIC
   return request<AIControlPlane>("/api/ai/runtime", { method: "POST", body: JSON.stringify({ runtimeId, model }) });
 }
 
-export function onboardProduct(input: OnboardProductInput): Promise<{ productId: string; dashboard: DashboardState }> {
-  return request<{ productId: string; dashboard: DashboardState }>("/api/products/onboard", {
+export function onboardProduct(input: OnboardProductInput): Promise<{ productId: string; operation: "created" | "updated"; dashboard: DashboardState }> {
+  return request<{ productId: string; operation: "created" | "updated"; dashboard: DashboardState }>("/api/products/onboard", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -134,10 +134,11 @@ export function analyzeProduct(sources: OnboardingSourceInput[]): Promise<{ brie
   });
 }
 
-export function generateProductPlan(productId: string): Promise<{ plan: DistributionPlan; application: PlanApplication; dashboard: DashboardState }> {
+export function generateProductPlan(productId: string, signal?: AbortSignal): Promise<{ plan: DistributionPlan; application: PlanApplication; dashboard: DashboardState }> {
   return request<{ plan: DistributionPlan; application: PlanApplication; dashboard: DashboardState }>(`/api/products/${encodeURIComponent(productId)}/plan`, {
     method: "POST",
     body: "{}",
+    signal,
   });
 }
 

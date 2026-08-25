@@ -166,3 +166,32 @@ test("local database starts honestly and persists an evidence-backed onboarding"
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("repeat onboarding updates matching product memory without duplicating evidence or queue work", () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-product-identity-"));
+  const database = new DistributionDatabase(directory);
+  const source = { type: "repository" as const, label: "Aperta repository", sourceUrl: "file:///projects/aperta", summary: "A local-first comprehension harness.", excerpt: "A local-first comprehension harness.", classification: "implementation" as const, confidence: 88 };
+  try {
+    const firstId = database.onboardProduct({
+      name: "Aperta", description: "A comprehension harness.", stage: "prototype", audience: "Developers", objective: "Test the ownership loop", positioning: "Evidence for generated code.", repositoryUrl: "/projects/aperta", sources: [],
+    }, [source]);
+    const secondId = database.onboardProduct({
+      name: "Aperta", description: "A local-first comprehension and agent harness.", stage: "early", audience: "Developers reviewing AI-generated code", objective: "Run ten developer tests", positioning: "The evidence and ownership layer.", repositoryUrl: "/projects/aperta/", sources: [],
+    }, [source]);
+    const dashboard = database.getDashboard();
+    assert.equal(secondId, firstId);
+    assert.equal(dashboard.products.length, 1);
+    assert.equal(dashboard.products[0]?.description, "A local-first comprehension and agent harness.");
+    assert.equal(dashboard.products[0]?.evidenceCount, 1);
+    assert.equal(dashboard.opportunities.length, 1);
+    assert.equal(dashboard.recentEvents[0]?.type, "product.updated");
+    const distinctId = database.onboardProduct({
+      name: "Aperta", description: "A separate product sharing the same display name.", stage: "idea", audience: "A different audience", objective: "Validate separate product identity", positioning: "Distinct source identity.", repositoryUrl: "/projects/other-aperta", sources: [],
+    }, [{ ...source, sourceUrl: "file:///projects/other-aperta", summary: "A separate product with a conflicting source identity." }]);
+    assert.notEqual(distinctId, firstId);
+    assert.equal(database.getDashboard().products.length, 2);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

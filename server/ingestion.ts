@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, extname, join, relative, resolve } from "node:path";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 import type {
@@ -205,7 +205,18 @@ function repositoryFiles(root: string): string[] {
     }
   };
   visit(root, 0);
-  return results;
+  const priority = (path: string): number => {
+    const name = relative(root, path).replaceAll("\\", "/").toLowerCase();
+    const base = basename(name);
+    if (/^readme(\.|$)/.test(base) && !name.includes("/")) return 0;
+    if (/^(package\.json|pyproject\.toml|cargo\.toml|pom\.xml|composer\.json|gemfile|requirements\.txt)$/.test(base) && !name.includes("/")) return 10;
+    if (/^(product|architecture|overview|vision|positioning|brief)(\.|-)/.test(base)) return 20;
+    if (/^readme(\.|$)/.test(base)) return 25;
+    if (name.startsWith("docs/")) return 35;
+    if (/^(changelog|security|contributing|code_of_conduct|code-of-conduct|license)/.test(base)) return 90;
+    return 50;
+  };
+  return results.sort((left, right) => priority(left) - priority(right) || relative(root, left).localeCompare(relative(root, right)));
 }
 
 function ingestRepository(source: OnboardingSourceInput): IngestedSource {
@@ -228,7 +239,8 @@ function ingestRepository(source: OnboardingSourceInput): IngestedSource {
   const files = repositoryFiles(root);
   if (!files.length) throw new Error("No readable product documentation or manifests were found in this folder.");
   const body = files.map((path) => `\n--- ${path.slice(root.length + 1)} ---\n${readFileSync(path, "utf8")}`).join("\n");
-  const { summary, excerpt } = summarize(body);
+  const { summary } = summarize(readFileSync(files[0], "utf8"));
+  const { excerpt } = summarize(body);
   return {
     type: "repository",
     label: source.label || basename(root),

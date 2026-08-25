@@ -65,6 +65,14 @@ function stableJson(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 
+function normalizedIdentityUrl(value: string | undefined): string {
+  return (value || "").trim().toLowerCase().replace(/\.git$/i, "").replace(/\/+$/, "");
+}
+
+function cleanSentence(value: string): string {
+  return value.trim().replace(/[.!?]+$/g, "");
+}
+
 function inferSignalKind(text: string): SignalKind {
   const value = text.toLowerCase();
   if (text.includes("?")) return "question";
@@ -440,6 +448,41 @@ export class DistributionDatabase {
     }
   }
 
+  private matchingProduct(input: OnboardProductInput, sources: IngestedSource[] = []): Row | undefined {
+    const candidates = this.database.prepare(`
+      SELECT * FROM products WHERE is_demo = 0 AND lower(trim(name)) = ? ORDER BY created_at DESC
+    `).all(input.name.trim().toLowerCase()) as Row[];
+    const suppliedIdentities = new Set(
+      [input.repositoryUrl, input.websiteUrl, ...sources.map((source) => source.sourceUrl)]
+        .map(normalizedIdentityUrl)
+        .filter(Boolean),
+    );
+    for (const row of candidates) {
+      const evidenceRows = this.database.prepare("SELECT source_url FROM evidence WHERE product_id = ? AND source_url <> ''").all(row.id) as Row[];
+      const existingIdentities = new Set(
+        [String(row.repository_url || ""), String(row.website_url || ""), ...evidenceRows.map((evidence) => String(evidence.source_url || ""))]
+          .map(normalizedIdentityUrl)
+          .filter(Boolean),
+      );
+      if ([...suppliedIdentities].some((identity) => existingIdentities.has(identity))) return row;
+    }
+    const compatible = candidates.filter((row) => {
+      const repository = normalizedIdentityUrl(input.repositoryUrl);
+      const website = normalizedIdentityUrl(input.websiteUrl);
+      const existingRepository = normalizedIdentityUrl(String(row.repository_url || ""));
+      const existingWebsite = normalizedIdentityUrl(String(row.website_url || ""));
+      if (repository && existingRepository && repository !== existingRepository) return false;
+      if (website && existingWebsite && website !== existingWebsite) return false;
+      return true;
+    });
+    return candidates.length === 1 && compatible.length === 1 ? compatible[0] : undefined;
+  }
+
+  findMatchingProductId(input: OnboardProductInput, sources: IngestedSource[] = []): string | null {
+    const match = this.matchingProduct(input, sources);
+    return match ? String(match.id) : null;
+  }
+
   onboardProduct(input: OnboardProductInput, sources: IngestedSource[]): string {
     const name = input.name.trim();
     const description = input.description.trim();
@@ -452,7 +495,8 @@ export class DistributionDatabase {
     if (!sources.length) throw new Error("At least one readable source is required.");
     if (!isProductStage(input.stage)) throw new Error("Choose a supported product stage.");
 
-    const productId = randomUUID();
+    const existing = this.matchingProduct(input, sources);
+    const productId = existing ? String(existing.id) : randomUUID();
     const createdAt = now();
     const sourceTypes = new Set(sources.map((source) => source.type));
     const sourceWeight = { repository: 30, url: 22, document: 16, text: 10 };
@@ -463,7 +507,18 @@ export class DistributionDatabase {
 
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      this.database.prepare(`
+      if (existing) {
+        this.database.prepare(`
+          UPDATE products SET name = ?, description = ?, stage = ?, repository_url = ?, website_url = ?,
+            audience = ?, objective = ?, positioning = ?, confidence = ?, onboarding_status = 'ready'
+          WHERE id = ?
+        `).run(
+          name, description, input.stage,
+          input.repositoryUrl?.trim() || String(existing.repository_url || ""),
+          input.websiteUrl?.trim() || String(existing.website_url || ""),
+          audience, objective, positioning, Math.max(confidence, Number(existing.confidence || 0)), productId,
+        );
+      } else this.database.prepare(`
         INSERT INTO products (
           id, name, description, stage, repository_url, website_url, audience, objective,
           positioning, confidence, onboarding_status, is_demo, created_at
@@ -489,7 +544,15 @@ export class DistributionDatabase {
           source_type, classification, confidence, payload_json
         ) VALUES (?, ?, 'onboarding-source', ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      const findEvidence = this.database.prepare(`
+        SELECT id FROM evidence WHERE product_id = ? AND lower(title) = lower(?) AND source_url = ? AND lower(summary) = lower(?) LIMIT 1
+      `);
       for (const source of sources) {
+        const prior = findEvidence.get(productId, source.label, source.sourceUrl, source.summary) as Row | undefined;
+        if (prior) {
+          evidenceIds.push(String(prior.id));
+          continue;
+        }
         const id = randomUUID();
         evidenceIds.push(id);
         insertEvidence.run(
@@ -511,9 +574,10 @@ export class DistributionDatabase {
       const freshness = 92;
       const promotionRisk = sourceTypes.has("repository") || sourceTypes.has("url") ? 16 : 30;
       const score = scoreOpportunity({ relevance, value, freshness, promotionRisk });
-      const primarySource = sources[0];
-      const draft = `${name} helps ${audience}.\n\n${description}\n\nCurrent objective: ${objective}\n\nEvidence to develop: ${primarySource.summary}`;
-      this.database.prepare(`
+      const primarySource = sources.slice().sort((left, right) => right.confidence - left.confidence)[0];
+      const draft = `${cleanSentence(description)}.\n\nI am testing this with ${cleanSentence(audience).toLowerCase()}. The immediate learning goal is to ${cleanSentence(objective).replace(/^to\s+/i, "")}.\n\nWhere does this problem become most expensive or frustrating in practice?`;
+      const opportunityCount = Number((this.database.prepare("SELECT COUNT(*) AS count FROM opportunities WHERE product_id = ?").get(productId) as Row).count);
+      if (opportunityCount === 0) this.database.prepare(`
         INSERT INTO opportunities (
           id, product_id, channel_id, type, title, context, why_now, suggested_angle, audience,
           source_url, draft_copy, relevance_score, value_score, freshness_score, promotion_risk,
@@ -539,10 +603,10 @@ export class DistributionDatabase {
       );
 
       this.recordEvent(
-        "product.onboarded",
+        existing ? "product.updated" : "product.onboarded",
         "product",
         productId,
-        `${name} onboarded from ${sources.length} source${sources.length === 1 ? "" : "s"} with ${confidence}% evidence confidence.`,
+        `${name} ${existing ? "updated" : "onboarded"} from ${sources.length} source${sources.length === 1 ? "" : "s"} with ${confidence}% evidence confidence.`,
         { sourceTypes: [...sourceTypes], confidence },
       );
       this.database.exec("COMMIT");

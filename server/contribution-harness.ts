@@ -168,7 +168,28 @@ export async function writeContributionDraft(
     };
   } catch (error) {
     const failure = safeHarnessFailure(error, "The contribution writer");
-    database.finishHarnessStep(draftStep, "failed", failure.message);
+    database.finishHarnessStep(draftStep, "failed", `${failure.message} ${failure.diagnostic}`);
+    if (failure.kind === "invalid-output") {
+      const repairStep = database.beginHarnessStep(runId, 2, "Repair structured contribution", "The tool-loop response missed the contract, so one schema-focused repair is running against the same opportunity and evidence.");
+      try {
+        const repaired = await executor.generateObject({
+          schema: contributionDraftSchema,
+          instructions: "Write one complete, channel-native contribution using only the supplied opportunity and evidence. Return exact evidence titles in citationLabels. Avoid hype, fabricated experience, unsupported metrics, and fake urgency.",
+          prompt: JSON.stringify({ product: context.product, channel: context.channel, opportunity: context.opportunity, evidence: context.evidence }),
+        });
+        const evidenceLabels = new Set(context.evidence.map((item) => item.title));
+        const productLabels = new Set(context.evidence.filter((item) => item.classification !== "audience-signal").map((item) => item.title));
+        const citationLabels = [...new Set(repaired.output.citationLabels.filter((label) => evidenceLabels.has(label)))];
+        if (!citationLabels.some((label) => productLabels.has(label))) throw new Error("The repaired contribution did not cite supporting product evidence.");
+        database.updateOpportunityDraft(opportunityId, repaired.output.draftCopy);
+        database.finishHarnessStep(repairStep, "completed", `${repaired.provider}/${repaired.model} repaired the contribution contract after ${repaired.attempts} structured attempt${repaired.attempts === 1 ? "" : "s"}.`);
+        database.finishHarnessRun(runId, "completed", `A cited ${context.channel.name} contribution draft is ready after structured repair.`);
+        return { runId, opportunityId, ...repaired.output, citationLabels, mode: "ai", provider: repaired.provider, model: repaired.model, warning: "" };
+      } catch (repairError) {
+        const repairFailure = safeHarnessFailure(repairError, "The structured contribution repair");
+        database.finishHarnessStep(repairStep, "failed", `${repairFailure.message} ${repairFailure.diagnostic}`);
+      }
+    }
     const fallback = localDraft(database, opportunityId, runId, `${failure.message} The existing local draft was preserved.`);
     database.finishHarnessRun(runId, "fallback", "The existing source-cited draft remains available for editing.", fallback.warning);
     return fallback;

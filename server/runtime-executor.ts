@@ -18,7 +18,7 @@ interface RuntimeResult<T> {
   attempts: number;
 }
 
-type RuntimeRunner = (command: string, args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
+type RuntimeRunner = (command: string, args: string[], cwd: string, options?: { signal?: AbortSignal }) => Promise<{ stdout: string; stderr: string }>;
 
 function jsonCandidate(value: string): unknown {
   const trimmed = value.trim();
@@ -65,8 +65,8 @@ export class AgentRuntimeExecutor {
 
   constructor(
     controlPlane: AIControlPlaneStore,
-    runner: RuntimeRunner = async (command, args, cwd) => {
-      const result = await execFileAsync(command, args, { cwd, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+    runner: RuntimeRunner = async (command, args, cwd, options) => {
+      const result = await execFileAsync(command, args, { cwd, signal: options?.signal, timeout: 75_000, maxBuffer: 8 * 1024 * 1024 });
       return { stdout: result.stdout, stderr: result.stderr };
     },
   ) {
@@ -78,6 +78,7 @@ export class AgentRuntimeExecutor {
     schema: ZodType<T>;
     prompt: string;
     contextFiles: Record<string, unknown>;
+    signal?: AbortSignal;
   }): Promise<RuntimeResult<T>> {
     const execution = await this.controlPlane.getExecutionProfile();
     if (execution.runtimeId === "native") throw new Error("The native runtime must use the native model executor.");
@@ -110,8 +111,9 @@ export class AgentRuntimeExecutor {
       const startedAt = Date.now();
       let previousError: unknown;
       for (let attempt = 1; attempt <= 2; attempt += 1) {
+        if (input.signal?.aborted) throw new DOMException("The runtime request was cancelled.", "AbortError");
         const attemptPrompt = `${guardrail}${attempt === 2 ? "\n\nYour previous response was not valid for the requested schema. Return one complete JSON object and nothing else." : ""}`;
-        const result = await this.runner(command, [...args.slice(0, -1), attemptPrompt], workspace);
+        const result = await this.runner(command, [...args.slice(0, -1), attemptPrompt], workspace, { signal: input.signal });
         let normalized: { text: string; activityCount: number };
         if (execution.runtimeId === "claude-code") normalized = textFromClaude(result.stdout);
         else if (execution.runtimeId === "codex") {

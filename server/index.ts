@@ -288,8 +288,9 @@ const server = createServer(async (request, response) => {
         sources: Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : [],
       };
       const sources = await ingestSources(input.sources);
+      const existingProductId = database.findMatchingProductId(input, sources);
       const productId = database.onboardProduct(input, sources);
-      json(response, 201, { productId, dashboard: database.getDashboard() });
+      json(response, existingProductId ? 200 : 201, { productId, operation: existingProductId ? "updated" : "created", dashboard: database.getDashboard() });
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/products/analyze") {
@@ -301,7 +302,14 @@ const server = createServer(async (request, response) => {
     }
     const planMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/plan$/);
     if (request.method === "POST" && planMatch) {
-      const result = await generateDistributionPlan(decodeURIComponent(planMatch[1]), modelExecutor, runtimeExecutor, aiControlPlane, database);
+      const abortController = new AbortController();
+      const abort = (): void => abortController.abort();
+      request.once("aborted", abort);
+      response.once("close", () => {
+        if (!response.writableEnded) abort();
+      });
+      const result = await generateDistributionPlan(decodeURIComponent(planMatch[1]), modelExecutor, runtimeExecutor, aiControlPlane, database, { signal: abortController.signal });
+      if (abortController.signal.aborted) return;
       json(response, 201, { ...result, dashboard: database.getDashboard() });
       return;
     }
@@ -390,6 +398,7 @@ const server = createServer(async (request, response) => {
     if ((request.method === "GET" || request.method === "HEAD") && serveStatic(url.pathname, response, request.method === "HEAD")) return;
     json(response, 404, { error: "Not found" });
   } catch (error) {
+    if (response.destroyed || response.writableEnded) return;
     const message = error instanceof Error ? error.message : "Unexpected server error";
     console.error("[distribution-os] request failed", { method: request.method, path: request.url, message });
     const missing = /not found$/i.test(message);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { activateAgentRuntime, activateModelProfile, approveActionExecution, captureProductSignals, connectGitHubSource, createActionAdapter, createAutomationPlaybook, decideOpportunity, decideSignal, disconnectSourceConnector, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, previewActionPolicy, probeActionAdapter, recordOpportunityOutcome, refreshWorkspace, requestActionExecution, runAutomationPlaybook, saveModelProfile, setActionAdapterEnabled, setAutomationPaused, syncSourceConnector, testModelProfile, updateAutomationPlaybook, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
 import type { AIControlPlane, AutomationRun, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
 import type { ActionAdapterDescriptor, ActionCapability, ActionExecutionRecord, ActionToolDescriptor, ActionTransport } from "../packages/action-fabric/src/index.ts";
@@ -15,7 +15,11 @@ const loading = ref(true);
 const actionBusy = ref(false);
 const onboardingBusy = ref(false);
 const planBusy = ref(false);
+const planElapsedSeconds = ref(0);
 const planNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
+const productNotice = ref<{ tone: "success" | "warning"; title: string; detail: string } | null>(null);
+const campaignNotice = ref<{ tone: "success" | "danger"; title: string; detail: string } | null>(null);
+const copiedOpportunityId = ref("");
 const error = ref("");
 const ai = ref<AIControlPlane | null>(null);
 const aiBusy = ref(false);
@@ -52,6 +56,8 @@ const actionAdapterForm = reactive({
 });
 const actionInvocationOpen = ref(false);
 const actionInvocation = reactive({ adapterId: "", adapterName: "", toolName: "", capability: "read" as ActionCapability, purpose: "", evidenceRefs: "", argumentsJson: "{}" });
+let planAbortController: AbortController | null = null;
+let planTimer: number | null = null;
 
 const readyOpportunities = computed(() => state.value?.opportunities.filter((item) => item.status === "ready") ?? []);
 const selected = computed(() => {
@@ -95,6 +101,11 @@ onMounted(async () => {
   } catch (cause) {
     aiError.value = cause instanceof Error ? cause.message : "The AI control plane could not be loaded.";
   }
+});
+
+onBeforeUnmount(() => {
+  planAbortController?.abort();
+  if (planTimer !== null) window.clearInterval(planTimer);
 });
 
 function selectProvider(providerId: ModelProviderId): void {
@@ -409,6 +420,9 @@ async function createProduct(input: OnboardProductInput): Promise<void> {
     signalForm.productId = result.productId;
     automationForm.productId = result.productId;
     selectedId.value = state.value.opportunities.find((item) => item.productId === result.productId)?.id ?? "";
+    productNotice.value = result.operation === "updated"
+      ? { tone: "success", title: "Existing product memory updated", detail: "Distribution-OS matched this product by name and source identity, refreshed its approved brief, and kept its prior evidence and outcomes." }
+      : { tone: "success", title: "Product memory created", detail: "The approved brief and bounded sources are now available to the planning harness." };
     view.value = "memory";
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "The product could not be onboarded.";
@@ -545,10 +559,14 @@ async function writeDraft(): Promise<void> {
 
 async function runDistributionPlan(productId: string): Promise<void> {
   planBusy.value = true;
+  planElapsedSeconds.value = 0;
   planNotice.value = null;
   error.value = "";
+  planAbortController = new AbortController();
+  const startedAt = Date.now();
+  planTimer = window.setInterval(() => { planElapsedSeconds.value = Math.floor((Date.now() - startedAt) / 1_000); }, 1_000);
   try {
-    const result = await generateProductPlan(productId);
+    const result = await generateProductPlan(productId, planAbortController.signal);
     state.value = result.dashboard;
     selectedId.value = result.application.opportunityIds[0] ?? selectedId.value;
     planNotice.value = result.plan.mode === "ai" && result.application.insertedCount > 0
@@ -558,9 +576,44 @@ async function runDistributionPlan(productId: string): Promise<void> {
       : { tone: "warning", title: "Local fallback plan ready", detail: result.plan.warning || "A conservative source-based move was generated without model inference." };
     view.value = "command";
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : "The distribution plan could not be generated.";
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      planNotice.value = { tone: "warning", title: "Planning run cancelled", detail: "The request was stopped and no new move was added to the review queue." };
+    } else error.value = cause instanceof Error ? cause.message : "The distribution plan could not be generated.";
   } finally {
+    if (planTimer !== null) window.clearInterval(planTimer);
+    planTimer = null;
+    planAbortController = null;
     planBusy.value = false;
+  }
+}
+
+function cancelDistributionPlan(): void {
+  planAbortController?.abort();
+}
+
+function productOptionLabel(product: DashboardState["products"][number]): string {
+  const source = product.repositoryUrl || product.websiteUrl;
+  let sourceLabel = "local brief";
+  if (source) {
+    try {
+      const url = new URL(source);
+      sourceLabel = url.protocol === "file:" ? url.pathname.split("/").filter(Boolean).at(-1) || "local repo" : `${url.hostname}${url.pathname.replace(/\/$/, "")}`;
+    } catch {
+      sourceLabel = source.replace(/^.*\//, "");
+    }
+  }
+  return `${product.name} · ${product.stage} · ${sourceLabel} · ${product.id.slice(0, 6)}`;
+}
+
+async function copyCampaignDraft(opportunity: Opportunity): Promise<void> {
+  campaignNotice.value = null;
+  try {
+    await navigator.clipboard.writeText(opportunity.draftCopy);
+    copiedOpportunityId.value = opportunity.id;
+    campaignNotice.value = { tone: "success", title: "Draft copied", detail: "The approved artifact is ready to paste into the destination you control." };
+    window.setTimeout(() => { if (copiedOpportunityId.value === opportunity.id) copiedOpportunityId.value = ""; }, 2_000);
+  } catch {
+    campaignNotice.value = { tone: "danger", title: "Copy was blocked", detail: "Select the draft text below and copy it manually." };
   }
 }
 
@@ -697,6 +750,11 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       </nav>
 
       <osx-alert v-if="error && state && view !== 'command' && view !== 'onboarding'" class="global-alert" tone="danger" title="Action needs attention" dismissible @dismiss="error = ''">{{ error }}</osx-alert>
+      <osx-alert v-if="productNotice && state && view === 'memory'" class="global-alert" :tone="productNotice.tone" :title="productNotice.title" dismissible @dismiss="productNotice = null">{{ productNotice.detail }}</osx-alert>
+      <osx-alert v-if="planBusy" class="global-alert active-run-alert" tone="info" title="Planning from bounded evidence">
+        <span>{{ activeRuntime?.name || "Native harness" }} is reading product memory, signals, channel policy, and prior outcomes · {{ planElapsedSeconds }}s</span>
+        <osx-button slot="actions" size="small" icon="x" @click="cancelDistributionPlan">Cancel run</osx-button>
+      </osx-alert>
 
       <section v-if="loading" class="loading-state" aria-live="polite">
         <osx-spinner size="large" label="Loading distribution memory"></osx-spinner>
@@ -784,7 +842,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <section v-if="state.products.length" class="automation-create-panel">
           <div class="section-heading"><div><p class="eyebrow">NEW EVIDENCE LOOP</p><h2>Create a bounded operating rhythm</h2><p>Each cycle refreshes read-only sources, generates a small plan, prepares cited drafts, and stops at approval. Empty cycles are valid; the system will not manufacture activity.</p></div><osx-badge tone="success" dot>Local scheduler</osx-badge></div>
           <form class="automation-form" @submit.prevent="createPlaybook">
-            <label>Product<select v-model="automationForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
+            <label>Product<select v-model="automationForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
             <label>Loop name <small>Optional</small><input v-model="automationForm.name" maxlength="120" placeholder="Weekly evidence-to-contribution loop" /></label>
             <label>Run cadence<select v-model.number="automationForm.intervalMinutes"><option :value="60">Every hour</option><option :value="360">Every 6 hours</option><option :value="720">Every 12 hours</option><option :value="1440">Daily</option><option :value="4320">Every 3 days</option><option :value="10080">Weekly</option></select></label>
             <label>Preparation budget<select v-model.number="automationForm.maxActionsPerRun"><option :value="1">1 move per run</option><option :value="2">2 moves per run</option><option :value="3">3 moves per run</option></select></label>
@@ -892,7 +950,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <section v-if="state.products.length" class="audience-signal-panel signal-capture-panel">
           <div class="section-heading"><div><p class="eyebrow">READ-ONLY SOURCE</p><h2>Connect GitHub issues</h2><p>Import recent repository issues as candidates. Pull requests are excluded, duplicate issues are ignored, and every observation still requires your review.</p></div><osx-badge :tone="state.connectors.length ? 'success' : 'info'" dot>{{ state.connectors.length }} connected</osx-badge></div>
           <form class="connector-form" @submit.prevent="connectGitHub">
-            <label>Product<select :value="connectorForm.productId" @change="selectConnectorProduct(($event.target as HTMLSelectElement).value)"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
+            <label>Product<select :value="connectorForm.productId" @change="selectConnectorProduct(($event.target as HTMLSelectElement).value)"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
             <label>GitHub repository <small>Public repos work without a token</small><input v-model="connectorForm.repository" inputmode="url" placeholder="owner/repository or https://github.com/…" /></label>
             <osx-button type="button" variant="primary" icon="git-branch" :loading="connectorBusyId === 'new'" :disabled="Boolean(connectorBusyId) || !connectorForm.repository.trim()" @click="connectGitHub">Connect & import</osx-button>
           </form>
@@ -910,7 +968,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <section v-if="state.products.length" class="audience-signal-panel signal-capture-panel">
           <div class="section-heading"><div><p class="eyebrow">MANUAL CAPTURE</p><h2>Add a bounded observation</h2><p>Paste only the relevant public discussion context or import its URL when no connector exists.</p></div><osx-badge tone="info">Manual source</osx-badge></div>
           <form class="signal-form" @submit.prevent="captureSignal">
-            <label>Product<select v-model="signalForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
+            <label>Product<select v-model="signalForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
             <label>Source type<select v-model="signalForm.type"><option value="text">Paste discussion context</option><option value="url">Public URL</option></select></label>
             <label>Source label <small>Make citations recognizable</small><input v-model="signalForm.label" placeholder="Example: Hacker News launch discussion" /></label>
             <label class="wide">{{ signalForm.type === 'url' ? 'Public discussion URL' : 'What did the audience say or ask?' }}
@@ -960,10 +1018,14 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 
       <main v-else-if="state && view === 'campaigns'" class="workspace-page">
         <header><p class="eyebrow">CAMPAIGNS</p><h1>Approved work awaiting execution.</h1><p>These contributions passed review. Execute them manually, then record what actually happened so the next plan can learn.</p></header>
+        <osx-alert v-if="campaignNotice" :tone="campaignNotice.tone" :title="campaignNotice.title" dismissible @dismiss="campaignNotice = null">{{ campaignNotice.detail }}</osx-alert>
         <section class="data-panel">
-          <div v-for="opportunity in approved" :key="opportunity.id" class="campaign-row">
-            <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" @click="decide('restore', opportunity)">Return to queue</osx-button><osx-button size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
-          </div>
+          <article v-for="opportunity in approved" :key="opportunity.id" class="campaign-artifact">
+            <header class="campaign-row">
+              <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" icon="copy" @click="copyCampaignDraft(opportunity)">{{ copiedOpportunityId === opportunity.id ? "Copied" : "Copy draft" }}</osx-button><osx-button size="small" @click="decide('restore', opportunity)">Return to queue</osx-button><osx-button size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
+            </header>
+            <pre class="campaign-draft">{{ opportunity.draftCopy }}</pre>
+          </article>
           <form v-if="outcomeOpportunityId" class="outcome-form" @submit.prevent="saveOutcome">
             <div><p class="eyebrow">CLOSE THE LOOP</p><h2>What happened after the approved move?</h2><p>Measured outcomes become evidence for the next planning run.</p></div>
             <label>Metric<select v-model="outcomeForm.metric"><option value="qualified-visits">Qualified visits</option><option value="replies">Replies</option><option value="conversations">Conversations</option><option value="signups">Signups</option><option value="stars">Stars</option><option value="revenue">Revenue</option></select></label>

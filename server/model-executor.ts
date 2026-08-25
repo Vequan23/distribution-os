@@ -22,6 +22,7 @@ export interface StructuredGenerationRequest<T> {
   instructions: string;
   prompt: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export type StructuredGenerator = <T>(request: StructuredGenerationRequest<T>) => Promise<StructuredGeneration<T>>;
@@ -108,7 +109,9 @@ export class NativeModelExecutor {
           instructions: `${request.instructions}${attempt === 2 ? " The previous response failed schema validation. Return a complete object matching the schema exactly." : ""}`,
           prompt: request.prompt.slice(0, 90_000),
           output: Output.object({ schema: request.schema }),
-          abortSignal: AbortSignal.timeout(request.timeoutMs ?? 60_000),
+          abortSignal: request.signal
+            ? AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs ?? 60_000)])
+            : AbortSignal.timeout(request.timeoutMs ?? 60_000),
         });
         return {
           output: result.output,
