@@ -8,7 +8,7 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body, #app { min-width: 320px; min-height: 100%; margin: 0; }
 body { min-height: 100vh; background: #081116; }
 button, input, textarea, select { font: inherit; }
@@ -56,6 +56,7 @@ a { color: inherit; }
 .preview-toolbar osx-icon { color: #65c6ec; }
 .preview-body { display: grid; gap: 12px; padding: 16px; background: linear-gradient(145deg, #142128, #0c171c); }
 .preview-body > osx-agent-run-status, .preview-body > osx-plan { display: block; }
+.mobile-run-summary { display: none; }
 .preview-evidence { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .preview-evidence > span { min-width: 0; display: grid; grid-template-columns: 20px minmax(0,1fr); gap: 3px 6px; padding: 10px; border: 1px solid #31464f; border-radius: 7px; color: #5fc2e9; background: rgba(7,15,19,.48); }
 .preview-evidence osx-icon { grid-row: 1 / 3; }
@@ -144,6 +145,16 @@ a { color: inherit; }
   .site-nav nav > a { display: none; }
   .brand small { display: none; }
   .hero { min-height: 0; padding: 58px 0 70px; }
+  .preview-body { gap: 10px; padding: 11px; }
+  .preview-body > osx-agent-run-status { display: none; }
+  .mobile-run-summary { display: grid; gap: 7px; padding: 13px; border: 1px solid #31464f; border-radius: 8px; background: #1a2931; }
+  .mobile-run-summary header { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+  .mobile-run-summary header span { color: #58bce6; font-size: 12px; font-weight: 800; letter-spacing: .1em; }
+  .mobile-run-summary header b { color: #8fa3ad; font-size: 12px; }
+  .mobile-run-summary > strong { color: #dbe7ec; font-size: 13px; }
+  .mobile-run-summary p { margin: 0; color: #81949d; font-size: 12px; line-height: 1.45; }
+  .mobile-run-progress { height: 5px; overflow: hidden; border: 1px solid #31464f; border-radius: 999px; background: #0d181e; }
+  .mobile-run-progress i { width: 50%; height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg,#36a85b,#2e9fd1); }
   .preview-evidence { grid-template-columns: 1fr; }
   .promise-strip { grid-template-columns: 1fr; }
   .promise-strip > div { min-height: 86px; border-right: 0; border-bottom: 1px solid #2b3d46; }
@@ -161,6 +172,7 @@ a { color: inherit; }
 }
 
 @media (max-width: 460px) {
+  .section-shell { width: calc(100% - 20px); }
   .site-nav { width: calc(100% - 18px); margin-top: 9px; }
   .site-nav nav osx-button { font-size: 12px; }
   .brand strong { font-size: 13px; }

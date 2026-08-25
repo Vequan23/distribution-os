@@ -16,7 +16,7 @@ const systemLayers = [
 const ecosystem = [
   { mark: "A", name: "Aperta", label: "Code comprehension", copy: "Turn AI-generated code into evidence-backed understanding and durable ownership.", href: "https://aperta-six.vercel.app/", action: "Explore Aperta", tone: "info", trackingId: "distribution-site-aperta" },
   { mark: "O", name: "OSX Components", label: "Interface system", copy: "Accessible Vue-authored web components for product interfaces with classic OS X clarity.", href: "https://osx-components.vercel.app/", action: "Browse components", tone: "warning", trackingId: "distribution-site-osx-components" },
-  { mark: "V", name: "VQ Clark", label: "Builder notes", copy: "Engineering, architecture, product systems, and the thinking behind this ecosystem.", href: "https://vqclark.vequanclark.chatgpt.site/", action: "Read the journal", tone: "neutral", trackingId: "distribution-site-vqclark" },
+  { mark: "V", name: "VQ Clark", label: "Builder notes", copy: "Engineering, architecture, product systems, and the thinking behind this ecosystem.", href: "https://vqclark.vercel.app/", action: "Read the journal", tone: "neutral", trackingId: "distribution-site-vqclark" },
 ];
 
 function scrollToId(id: string): void {
@@ -77,6 +77,12 @@ function openSource(): void {
             </div>
             <div class="preview-body">
               <osx-agent-run-status phase="working" label="Preparing one contribution" detail="Reading product memory, accepted signals, and channel policy"></osx-agent-run-status>
+              <section class="mobile-run-summary" aria-label="Preparing one contribution, step 2 of 4">
+                <header><span>WORK IN PROGRESS</span><b>2 of 4</b></header>
+                <strong>Preparing one contribution</strong>
+                <p>Reading accepted product and audience evidence.</p>
+                <div class="mobile-run-progress" aria-hidden="true"><i></i></div>
+              </section>
               <osx-plan title="Evidence before action" :steps="loopSteps" :show-progress="true" compact></osx-plan>
               <div class="preview-evidence">
                 <span><osx-icon name="file-text" :size="16"></osx-icon><strong>3 cited facts</strong><small>product evidence</small></span>
