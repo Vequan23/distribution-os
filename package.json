@@ -1,0 +1,32 @@
+{
+  "name": "distribution-os",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local-first distribution harness for technical products.",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n service,ui -c cyan,blue \"npm:dev:service\" \"npm:dev:ui\"",
+    "dev:service": "node --watch --no-warnings --experimental-strip-types server/index.ts",
+    "dev:ui": "vite",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.server.json",
+    "build": "npm run typecheck && tsc -p tsconfig.server.json && vite build",
+    "start": "node --no-warnings dist-server/server/index.js",
+    "test": "node --no-warnings --experimental-strip-types --test test/*.test.ts",
+    "check": "npm test && npm run build"
+  },
+  "dependencies": {
+    "osx-components": "^0.7.0",
+    "vue": "^3.5.21"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.3",
+    "vue-tsc": "^3.0.8"
+  }
+}
