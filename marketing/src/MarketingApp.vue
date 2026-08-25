@@ -14,9 +14,9 @@ const systemLayers = [
 ];
 
 const ecosystem = [
-  { mark: "A", name: "Aperta", label: "Code comprehension", copy: "Turn AI-generated code into evidence-backed understanding and durable ownership.", href: "https://aperta-six.vercel.app/", action: "Explore Aperta" },
-  { mark: "O", name: "OSX Components", label: "Interface system", copy: "Accessible Vue-authored web components for product interfaces with classic OS X clarity.", href: "https://osx-components.vercel.app/", action: "Browse components" },
-  { mark: "V", name: "VQ Clark", label: "Builder notes", copy: "Engineering, architecture, product systems, and the thinking behind this ecosystem.", href: "https://vqclark.vequanclark.chatgpt.site/", action: "Read the journal" },
+  { mark: "A", name: "Aperta", label: "Code comprehension", copy: "Turn AI-generated code into evidence-backed understanding and durable ownership.", href: "https://aperta-six.vercel.app/", action: "Explore Aperta", tone: "info", trackingId: "distribution-site-aperta" },
+  { mark: "O", name: "OSX Components", label: "Interface system", copy: "Accessible Vue-authored web components for product interfaces with classic OS X clarity.", href: "https://osx-components.vercel.app/", action: "Browse components", tone: "warning", trackingId: "distribution-site-osx-components" },
+  { mark: "V", name: "VQ Clark", label: "Builder notes", copy: "Engineering, architecture, product systems, and the thinking behind this ecosystem.", href: "https://vqclark.vequanclark.chatgpt.site/", action: "Read the journal", tone: "neutral", trackingId: "distribution-site-vqclark" },
 ];
 
 function scrollToId(id: string): void {
@@ -155,10 +155,18 @@ function openSource(): void {
           <osx-copy tone="muted" measure="default">Distribution OS is part of a growing set of independent tools for understanding, shipping, and earning attention—without giving up your judgment.</osx-copy>
         </header>
         <div class="ecosystem-grid">
-          <a v-for="product in ecosystem" :key="product.name" :href="product.href" target="_blank" rel="noreferrer" class="ecosystem-card">
-            <span class="ecosystem-mark">{{ product.mark }}</span>
-            <span class="ecosystem-copy"><small>{{ product.label }}</small><strong>{{ product.name }}</strong><span>{{ product.copy }}</span><b>{{ product.action }} <osx-icon name="external" :size="14"></osx-icon></b></span>
-          </a>
+          <osx-ecosystem-card
+            v-for="product in ecosystem"
+            :key="product.name"
+            :name="product.name"
+            :category="product.label"
+            :description="product.copy"
+            :href="product.href"
+            :action-label="product.action"
+            :mark="product.mark"
+            :tone="product.tone"
+            :tracking-id="product.trackingId"
+          ></osx-ecosystem-card>
         </div>
       </section>
 

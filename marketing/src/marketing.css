@@ -114,15 +114,7 @@ a { color: inherit; }
 .osx-provenance strong { color: #c9d7dd; }
 .provenance-mark { width: 23px; height: 23px; border-radius: 6px; font-size: 12px; }
 .ecosystem-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 11px; }
-.ecosystem-card { min-width: 0; display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 14px; padding: 20px; border: 1px solid #344a54; border-radius: 10px; background: linear-gradient(145deg,#18272f,#0e191e); box-shadow: 0 1px rgba(255,255,255,.05) inset; text-decoration: none; transition: transform .18s ease, border-color .18s ease, background .18s ease; }
-.ecosystem-card:hover { border-color: #4599ba; background: linear-gradient(145deg,#1b333e,#10232b); transform: translateY(-2px); }
-.ecosystem-card:focus-visible { outline: 3px solid rgba(76,182,230,.38); outline-offset: 3px; }
-.ecosystem-mark { width: 44px; height: 44px; border-radius: 10px; font-size: 19px; }
-.ecosystem-copy { min-width: 0; display: grid; align-content: start; gap: 6px; }
-.ecosystem-copy small { color: #5bbce5; font-size: 12px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
-.ecosystem-copy strong { color: #e1edf2; font: 400 21px Georgia, serif; }
-.ecosystem-copy > span { color: #879aa3; font-size: 12px; line-height: 1.55; }
-.ecosystem-copy b { display: inline-flex; gap: 5px; align-items: center; margin-top: 8px; color: #63c5ec; font-size: 12px; }
+.ecosystem-grid osx-ecosystem-card { min-width: 0; }
 
 .closing-section { display: flex; justify-content: space-between; gap: 50px; align-items: center; margin-bottom: 80px; padding: 46px; border: 1px solid #386074; border-radius: 13px; background: radial-gradient(circle at 85% 20%, rgba(38,141,183,.22), transparent 21rem), linear-gradient(135deg,#1b303a,#0d1a20); box-shadow: 0 25px 70px rgba(0,0,0,.24), 0 1px rgba(255,255,255,.08) inset; }
 .closing-section osx-heading, .closing-section osx-copy { display: block; }
@@ -175,11 +167,8 @@ a { color: inherit; }
   .hero-actions { align-items: stretch; flex-direction: column; }
   .hero-actions osx-button { width: 100%; }
   .trust-line { align-items: flex-start; flex-direction: column; }
-  .ecosystem-card { grid-template-columns: 38px minmax(0,1fr); padding: 16px; }
-  .ecosystem-mark { width: 36px; height: 36px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .ecosystem-card { transition: none; }
 }
