@@ -1,4 +1,4 @@
-import type { DashboardState } from "../server/domain.ts";
+import type { DashboardState, OnboardProductInput } from "../server/domain.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -19,6 +19,13 @@ export function loadDashboard(): Promise<DashboardState> {
 
 export function refreshSignals(): Promise<DashboardState> {
   return request<DashboardState>("/api/refresh", { method: "POST", body: "{}" });
+}
+
+export function onboardProduct(input: OnboardProductInput): Promise<{ productId: string; dashboard: DashboardState }> {
+  return request<{ productId: string; dashboard: DashboardState }>("/api/products/onboard", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function decideOpportunity(

@@ -9,6 +9,8 @@ import {
   type DashboardState,
   type DistributionEvent,
   type Evidence,
+  type IngestedSource,
+  type OnboardProductInput,
   type Opportunity,
   type OpportunityStatus,
   type Product,
@@ -32,7 +34,8 @@ export class DistributionDatabase {
     this.database = new DatabaseSync(this.databasePath);
     this.database.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.migrate();
-    this.seed();
+    this.seedChannels();
+    this.markLegacyDemoData();
   }
 
   close(): void {
@@ -48,6 +51,12 @@ export class DistributionDatabase {
         stage TEXT NOT NULL,
         repository_url TEXT NOT NULL DEFAULT '',
         website_url TEXT NOT NULL DEFAULT '',
+        audience TEXT NOT NULL DEFAULT '',
+        objective TEXT NOT NULL DEFAULT '',
+        positioning TEXT NOT NULL DEFAULT '',
+        confidence INTEGER NOT NULL DEFAULT 0,
+        onboarding_status TEXT NOT NULL DEFAULT 'draft',
+        is_demo INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL
       );
 
@@ -59,6 +68,9 @@ export class DistributionDatabase {
         summary TEXT NOT NULL,
         source_url TEXT NOT NULL DEFAULT '',
         occurred_at TEXT NOT NULL,
+        source_type TEXT NOT NULL DEFAULT 'text',
+        classification TEXT NOT NULL DEFAULT 'intent',
+        confidence INTEGER NOT NULL DEFAULT 0,
         payload_json TEXT NOT NULL DEFAULT '{}'
       );
 
@@ -122,48 +134,29 @@ export class DistributionDatabase {
       CREATE INDEX IF NOT EXISTS events_recent_idx
         ON events(occurred_at DESC);
     `);
+
+    this.addColumn("products", "audience", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("products", "objective", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("products", "positioning", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("products", "confidence", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("products", "onboarding_status", "TEXT NOT NULL DEFAULT 'draft'");
+    this.addColumn("products", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("evidence", "source_type", "TEXT NOT NULL DEFAULT 'text'");
+    this.addColumn("evidence", "classification", "TEXT NOT NULL DEFAULT 'intent'");
+    this.addColumn("evidence", "confidence", "INTEGER NOT NULL DEFAULT 0");
   }
 
-  private seed(): void {
-    const count = this.database.prepare("SELECT COUNT(*) AS count FROM products").get() as Row;
+  private addColumn(table: string, column: string, definition: string): void {
+    const columns = this.database.prepare(`PRAGMA table_info(${table})`).all() as Row[];
+    if (!columns.some((row) => String(row.name) === column)) {
+      this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
+  private seedChannels(): void {
+    const count = this.database.prepare("SELECT COUNT(*) AS count FROM channels").get() as Row;
     if (Number(count.count) > 0) return;
-
     const createdAt = now();
-    const insertProduct = this.database.prepare(`
-      INSERT INTO products (id, name, description, stage, repository_url, website_url, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    insertProduct.run(
-      "osx-components",
-      "OSX Components",
-      "Accessible Vue-authored web components for distinctive product and agent interfaces.",
-      "open-source",
-      "https://github.com/Vequan23/osx-components",
-      "https://osx-components.vercel.app/",
-      createdAt,
-    );
-    insertProduct.run(
-      "aperta",
-      "Aperta",
-      "A model-agnostic comprehension and ownership harness for AI-generated code.",
-      "public-beta",
-      "https://github.com/Vequan23/aperta",
-      "https://aperta-six.vercel.app/",
-      createdAt,
-    );
-
-    const insertEvidence = this.database.prepare(`
-      INSERT INTO evidence (id, product_id, kind, title, summary, source_url, occurred_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    const evidenceRows = [
-      ["osx-agent-primitives", "osx-components", "release", "Agent-native UI primitives", "Thinking, plan, artifact, citation, source panel, and streaming Markdown components now form a coherent agent UI layer.", "https://github.com/Vequan23/osx-components", createdAt],
-      ["osx-vue-elements", "osx-components", "architecture", "Vue-authored, framework-neutral", "The library uses Vue custom elements so React, Svelte, Astro, and plain HTML consumers share the same accessible implementation.", "https://osx-components.vercel.app/components", createdAt],
-      ["aperta-proof-graph", "aperta", "capability", "Evidence-backed comprehension", "Aperta connects code changes, verification, ownership reviews, and retained understanding in a local proof graph.", "https://github.com/Vequan23/aperta", createdAt],
-      ["aperta-beta-two", "aperta", "release", "Beta harness reliability upgrade", "The current beta improves local storage, initialization feedback, syntax coverage, adjustable ownership panes, and icon consistency.", "https://www.npmjs.com/package/aperta-cli", createdAt],
-    ];
-    for (const row of evidenceRows) insertEvidence.run(...row);
-
     const insertChannel = this.database.prepare(`
       INSERT INTO channels (id, name, handle, mode, status, daily_limit, connected, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -172,108 +165,129 @@ export class DistributionDatabase {
     insertChannel.run("bluesky", "Bluesky", "Not connected", "approval", "planned", 2, 0, createdAt);
     insertChannel.run("x", "X", "Not connected", "approval", "planned", 2, 0, createdAt);
     insertChannel.run("devto", "Dev.to", "Draft export", "draft", "manual", 1, 0, createdAt);
+  }
 
-    const insertOpportunity = this.database.prepare(`
-      INSERT INTO opportunities (
-        id, product_id, channel_id, type, title, context, why_now, suggested_angle, audience,
-        source_url, draft_copy, relevance_score, value_score, freshness_score, promotion_risk,
-        score, status, discovered_at, evidence_ids_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
-    `);
+  private markLegacyDemoData(): void {
+    this.database.prepare("UPDATE products SET is_demo = 1 WHERE id IN ('osx-components', 'aperta') AND audience = ''").run();
+  }
 
-    const opportunities = [
-      {
-        id: "agent-ui-primitives",
-        productId: "osx-components",
-        channelId: "linkedin",
-        type: "owned-post",
-        title: "Explain why agent interfaces need primitives beyond chat bubbles",
-        context: "OSX Components now includes a complete set of agent-native primitives, creating a concrete technical story rather than a generic release announcement.",
-        whyNow: "The component set has crossed the threshold from individual controls into a coherent agent application layer.",
-        angle: "Teach the interface architecture: reasoning disclosure, plans, tool activity, artifacts, sources, and approval gates are separate interaction contracts.",
-        audience: "Frontend engineers, design-system teams, and AI product builders",
-        sourceUrl: "https://osx-components.vercel.app/components",
-        draft: "Chat bubbles are not an agent interface.\n\nA capable agent UI needs distinct contracts for reasoning summaries, plans, tool activity, approvals, artifacts, citations, and streaming output. We built those contracts as framework-neutral web components—authored in Vue, usable anywhere.\n\nThe interesting design problem is not making AI look busy. It is making autonomy legible enough for a person to understand and control.",
-        relevance: 96,
-        value: 92,
-        freshness: 98,
-        risk: 12,
-        evidenceIds: ["osx-agent-primitives", "osx-vue-elements"],
-      },
-      {
-        id: "comprehension-bottleneck",
-        productId: "aperta",
-        channelId: "bluesky",
-        type: "owned-post",
-        title: "Make the case that comprehension is the next AI coding bottleneck",
-        context: "Aperta has enough working harness behavior to support a grounded point of view about code ownership after generation.",
-        whyNow: "The beta release provides current evidence and a public installation path.",
-        angle: "Lead with the problem engineers feel after code generation, then show the proof-and-ownership loop without turning the post into a launch pitch.",
-        audience: "Developers using coding agents and maintainers reviewing AI-authored changes",
-        sourceUrl: "https://aperta-six.vercel.app/",
-        draft: "AI coding is making generation cheap. The next bottleneck is knowing whether anyone actually understands what was generated.\n\nTests prove behavior. They do not prove that the person shipping the change can trace it, debug it, or explain its risks.\n\nThat gap—between working code and owned code—is where the next generation of developer tooling has to operate.",
-        relevance: 93,
-        value: 91,
-        freshness: 94,
-        risk: 9,
-        evidenceIds: ["aperta-proof-graph", "aperta-beta-two"],
-      },
-      {
-        id: "streaming-markdown-guide",
-        productId: "osx-components",
-        channelId: "devto",
-        type: "durable-content",
-        title: "Publish a practical guide to streaming-safe agent Markdown",
-        context: "The Markdown component solves a difficult implementation problem with code blocks, tables, partial syntax, copying, and injection safety.",
-        whyNow: "The implementation and component explorer provide enough detail for a durable technical article with working examples.",
-        angle: "Explain the failure modes first, then present a component contract and framework-neutral implementation strategy.",
-        audience: "Engineers building chat and agent interfaces",
-        sourceUrl: "https://osx-components.vercel.app/components#story-osx-markdown",
-        draft: "# Streaming Markdown is a state machine, not a formatting pass\n\nMost Markdown renderers assume the document is complete. Agent output violates that assumption on every token. A useful renderer must tolerate unfinished fences, partial tables, unsafe HTML, and code blocks whose copy action should remain stable while text is still arriving...",
-        relevance: 89,
-        value: 96,
-        freshness: 87,
-        risk: 5,
-        evidenceIds: ["osx-agent-primitives"],
-      },
-    ];
+  onboardProduct(input: OnboardProductInput, sources: IngestedSource[]): string {
+    const name = input.name.trim();
+    const description = input.description.trim();
+    const audience = input.audience.trim();
+    const objective = input.objective.trim();
+    const positioning = input.positioning.trim();
+    if (!name || !description || !audience || !objective) {
+      throw new Error("Name, description, audience, and objective are required.");
+    }
+    if (!sources.length) throw new Error("At least one readable source is required.");
 
-    for (const opportunity of opportunities) {
-      const score = scoreOpportunity({
-        relevance: opportunity.relevance,
-        value: opportunity.value,
-        freshness: opportunity.freshness,
-        promotionRisk: opportunity.risk,
-      });
-      insertOpportunity.run(
-        opportunity.id,
-        opportunity.productId,
-        opportunity.channelId,
-        opportunity.type,
-        opportunity.title,
-        opportunity.context,
-        opportunity.whyNow,
-        opportunity.angle,
-        opportunity.audience,
-        opportunity.sourceUrl,
-        opportunity.draft,
-        opportunity.relevance,
-        opportunity.value,
-        opportunity.freshness,
-        opportunity.risk,
+    const productId = randomUUID();
+    const createdAt = now();
+    const sourceTypes = new Set(sources.map((source) => source.type));
+    const sourceWeight = { repository: 30, url: 22, document: 16, text: 10 };
+    const evidenceCoverage = [...sourceTypes].reduce((total, type) => total + sourceWeight[type], 0);
+    const profileCoverage = 24 + (positioning ? 8 : 0);
+    const corroboration = sources.length >= 3 ? 12 : sources.length === 2 ? 7 : 0;
+    const confidence = Math.min(96, profileCoverage + evidenceCoverage + corroboration);
+
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare(`
+        INSERT INTO products (
+          id, name, description, stage, repository_url, website_url, audience, objective,
+          positioning, confidence, onboarding_status, is_demo, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?)
+      `).run(
+        productId,
+        name,
+        description,
+        input.stage.trim() || "early",
+        input.repositoryUrl?.trim() || "",
+        input.websiteUrl?.trim() || "",
+        audience,
+        objective,
+        positioning,
+        confidence,
+        createdAt,
+      );
+
+      const evidenceIds: string[] = [];
+      const insertEvidence = this.database.prepare(`
+        INSERT INTO evidence (
+          id, product_id, kind, title, summary, source_url, occurred_at,
+          source_type, classification, confidence, payload_json
+        ) VALUES (?, ?, 'onboarding-source', ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const source of sources) {
+        const id = randomUUID();
+        evidenceIds.push(id);
+        insertEvidence.run(
+          id,
+          productId,
+          source.label,
+          source.summary,
+          source.sourceUrl,
+          createdAt,
+          source.type,
+          source.classification,
+          source.confidence,
+          JSON.stringify({ excerpt: source.excerpt }),
+        );
+      }
+
+      const relevance = Math.max(55, confidence);
+      const value = objective.toLowerCase().includes("user") || objective.toLowerCase().includes("revenue") ? 82 : 72;
+      const freshness = 92;
+      const promotionRisk = sourceTypes.has("repository") || sourceTypes.has("url") ? 16 : 30;
+      const score = scoreOpportunity({ relevance, value, freshness, promotionRisk });
+      const primarySource = sources[0];
+      const draft = `${name} helps ${audience}.\n\n${description}\n\nCurrent objective: ${objective}\n\nEvidence to develop: ${primarySource.summary}`;
+      this.database.prepare(`
+        INSERT INTO opportunities (
+          id, product_id, channel_id, type, title, context, why_now, suggested_angle, audience,
+          source_url, draft_copy, relevance_score, value_score, freshness_score, promotion_risk,
+          score, status, discovered_at, evidence_ids_json
+        ) VALUES (?, ?, 'linkedin', 'owned-post', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
+      `).run(
+        randomUUID(),
+        productId,
+        `Clarify the problem ${name} is built to solve`,
+        `${description} This first move is derived from ${sources.length} onboarding source${sources.length === 1 ? "" : "s"}, not an external audience signal.`,
+        "The product profile has just been established and needs a founder-verified public narrative before channel discovery begins.",
+        positioning || `Explain the problem, the affected audience, and the evidence behind ${name} without making unsupported claims.`,
+        audience,
+        primarySource.sourceUrl,
+        draft,
+        relevance,
+        value,
+        freshness,
+        promotionRisk,
         score,
         createdAt,
-        JSON.stringify(opportunity.evidenceIds),
+        JSON.stringify(evidenceIds),
       );
-    }
 
-    this.recordEvent("system.initialized", "system", "local", "Local distribution ledger initialized with two products and three evidence-backed moves.");
+      this.recordEvent(
+        "product.onboarded",
+        "product",
+        productId,
+        `${name} onboarded from ${sources.length} source${sources.length === 1 ? "" : "s"} with ${confidence}% evidence confidence.`,
+        { sourceTypes: [...sourceTypes], confidence },
+      );
+      this.database.exec("COMMIT");
+      return productId;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getDashboard(): DashboardState {
     const productRows = this.database.prepare(`
       SELECT p.*, COUNT(e.id) AS evidence_count
       FROM products p LEFT JOIN evidence e ON e.product_id = p.id
+      WHERE p.is_demo = 0
       GROUP BY p.id ORDER BY p.name
     `).all() as Row[];
     const products: Product[] = productRows.map((row) => ({
@@ -284,6 +298,11 @@ export class DistributionDatabase {
       repositoryUrl: String(row.repository_url),
       websiteUrl: String(row.website_url),
       evidenceCount: Number(row.evidence_count),
+      audience: String(row.audience),
+      objective: String(row.objective),
+      positioning: String(row.positioning),
+      confidence: Number(row.confidence),
+      onboardingStatus: String(row.onboarding_status) as Product["onboardingStatus"],
     }));
 
     const channelRows = this.database.prepare("SELECT * FROM channels ORDER BY connected DESC, name").all() as Row[];
@@ -302,12 +321,13 @@ export class DistributionDatabase {
       FROM opportunities o
       JOIN products p ON p.id = o.product_id
       JOIN channels c ON c.id = o.channel_id
+      WHERE p.is_demo = 0
       ORDER BY CASE o.status WHEN 'ready' THEN 0 WHEN 'approved' THEN 1 WHEN 'published' THEN 2 ELSE 3 END,
                o.score DESC, o.discovered_at DESC
     `).all() as Row[];
 
     const evidenceStatement = this.database.prepare(`
-      SELECT id, kind, title, summary, source_url, occurred_at FROM evidence WHERE id = ?
+      SELECT id, kind, title, summary, source_url, occurred_at, source_type, classification, confidence FROM evidence WHERE id = ?
     `);
     const opportunities: Opportunity[] = opportunityRows.map((row) => {
       const evidenceIds = JSON.parse(String(row.evidence_ids_json)) as string[];
@@ -321,6 +341,9 @@ export class DistributionDatabase {
           summary: String(evidenceRow.summary),
           sourceUrl: String(evidenceRow.source_url),
           occurredAt: String(evidenceRow.occurred_at),
+          sourceType: String(evidenceRow.source_type) as Evidence["sourceType"],
+          classification: String(evidenceRow.classification) as Evidence["classification"],
+          confidence: Number(evidenceRow.confidence),
         }];
       });
       return {
@@ -351,9 +374,10 @@ export class DistributionDatabase {
 
     const metricRow = this.database.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM opportunities WHERE status = 'ready') AS ready_moves,
-        (SELECT COUNT(*) FROM opportunities WHERE status = 'approved') AS approved_moves,
-        (SELECT COUNT(*) FROM evidence) AS evidence_items,
+        (SELECT COUNT(*) FROM opportunities o JOIN products p ON p.id = o.product_id WHERE o.status = 'ready' AND p.is_demo = 0) AS ready_moves,
+        (SELECT COUNT(*) FROM opportunities o JOIN products p ON p.id = o.product_id WHERE o.status = 'approved' AND p.is_demo = 0) AS approved_moves,
+        (SELECT COUNT(*) FROM evidence e JOIN products p ON p.id = e.product_id WHERE p.is_demo = 0) AS evidence_items,
+        (SELECT COALESCE(ROUND(AVG(confidence)), 0) FROM products WHERE is_demo = 0) AS analysis_confidence,
         (SELECT COUNT(*) FROM channels WHERE connected = 1) AS connected_channels
     `).get() as Row;
 
@@ -375,6 +399,11 @@ export class DistributionDatabase {
         approvedMoves: Number(metricRow.approved_moves),
         evidenceItems: Number(metricRow.evidence_items),
         connectedChannels: Number(metricRow.connected_channels),
+        analysisConfidence: Number(metricRow.analysis_confidence),
+      },
+      onboarding: {
+        required: products.length === 0,
+        supportedSources: ["text", "url", "document", "repository"],
       },
       products,
       channels,
@@ -404,7 +433,7 @@ export class DistributionDatabase {
   }
 
   recordRefresh(): void {
-    this.recordEvent("signals.refreshed", "system", "scout", "Product evidence and opportunity signals refreshed locally.");
+    this.recordEvent("evidence.reloaded", "system", "local", "Local product evidence was reloaded. External signal scouts are not configured yet.");
   }
 
   private recordEvent(type: string, entityType: string, entityId: string, detail: string, payload: Record<string, unknown> = {}): void {

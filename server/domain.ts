@@ -1,5 +1,7 @@
 export type ChannelMode = "draft" | "approval" | "autopilot";
 export type OpportunityStatus = "ready" | "approved" | "skipped" | "published";
+export type OnboardingSourceType = "text" | "url" | "document" | "repository";
+export type EvidenceClassification = "intent" | "public-claim" | "implementation" | "outcome";
 
 export interface Product {
   id: string;
@@ -9,6 +11,11 @@ export interface Product {
   repositoryUrl: string;
   websiteUrl: string;
   evidenceCount: number;
+  audience: string;
+  objective: string;
+  positioning: string;
+  confidence: number;
+  onboardingStatus: "draft" | "ready";
 }
 
 export interface Channel {
@@ -28,6 +35,40 @@ export interface Evidence {
   summary: string;
   sourceUrl: string;
   occurredAt: string;
+  sourceType: OnboardingSourceType;
+  classification: EvidenceClassification;
+  confidence: number;
+}
+
+export interface OnboardingSourceInput {
+  type: OnboardingSourceType;
+  label: string;
+  value?: string;
+  contentBase64?: string;
+  mimeType?: string;
+  filename?: string;
+}
+
+export interface OnboardProductInput {
+  name: string;
+  description: string;
+  stage: string;
+  audience: string;
+  objective: string;
+  positioning: string;
+  websiteUrl?: string;
+  repositoryUrl?: string;
+  sources: OnboardingSourceInput[];
+}
+
+export interface IngestedSource {
+  type: OnboardingSourceType;
+  label: string;
+  sourceUrl: string;
+  summary: string;
+  excerpt: string;
+  classification: EvidenceClassification;
+  confidence: number;
 }
 
 export interface Opportunity {
@@ -75,6 +116,11 @@ export interface DashboardState {
     approvedMoves: number;
     evidenceItems: number;
     connectedChannels: number;
+    analysisConfidence: number;
+  };
+  onboarding: {
+    required: boolean;
+    supportedSources: OnboardingSourceType[];
   };
   products: Product[];
   channels: Channel[];

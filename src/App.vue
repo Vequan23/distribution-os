@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { decideOpportunity, loadDashboard, refreshSignals } from "./api.ts";
-import type { DashboardState, Opportunity } from "../server/domain.ts";
+import { decideOpportunity, loadDashboard, onboardProduct, refreshSignals } from "./api.ts";
+import type { DashboardState, OnboardProductInput, Opportunity } from "../server/domain.ts";
+import ProductOnboarding from "./ProductOnboarding.vue";
 
-type View = "command" | "memory" | "audience" | "campaigns" | "channels" | "journal" | "settings";
+type View = "command" | "onboarding" | "memory" | "audience" | "campaigns" | "channels" | "journal" | "settings";
 
 const state = ref<DashboardState | null>(null);
 const view = ref<View>("command");
@@ -11,6 +12,7 @@ const selectedId = ref("");
 const draft = ref("");
 const loading = ref(true);
 const actionBusy = ref(false);
+const onboardingBusy = ref(false);
 const error = ref("");
 
 const readyOpportunities = computed(() => state.value?.opportunities.filter((item) => item.status === "ready") ?? []);
@@ -30,6 +32,7 @@ watch(selected, (opportunity) => {
 onMounted(async () => {
   try {
     state.value = await loadDashboard();
+    if (state.value.onboarding.required) view.value = "onboarding";
     selectedId.value = readyOpportunities.value[0]?.id ?? state.value.opportunities[0]?.id ?? "";
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "Distribution-OS could not load its local ledger.";
@@ -47,6 +50,21 @@ async function refresh(): Promise<void> {
     error.value = cause instanceof Error ? cause.message : "Signals could not be refreshed.";
   } finally {
     actionBusy.value = false;
+  }
+}
+
+async function createProduct(input: OnboardProductInput): Promise<void> {
+  onboardingBusy.value = true;
+  error.value = "";
+  try {
+    const result = await onboardProduct(input);
+    state.value = result.dashboard;
+    selectedId.value = state.value.opportunities.find((item) => item.productId === result.productId)?.id ?? "";
+    view.value = "memory";
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : "The product could not be onboarded.";
+  } finally {
+    onboardingBusy.value = false;
   }
 }
 
@@ -82,7 +100,8 @@ function formatDate(value: string): string {
 
 const navItems: Array<{ id: View; label: string; icon: string; section?: string }> = [
   { id: "command", label: "Command Center", icon: "dashboard", section: "OPERATE" },
-  { id: "memory", label: "Product Memory", icon: "boxes", section: "UNDERSTAND" },
+  { id: "onboarding", label: "Add Product", icon: "plus", section: "UNDERSTAND" },
+  { id: "memory", label: "Product Memory", icon: "boxes" },
   { id: "audience", label: "Audience Map", icon: "user" },
   { id: "campaigns", label: "Campaigns", icon: "send", section: "EXECUTE" },
   { id: "channels", label: "Channels", icon: "activity" },
@@ -103,7 +122,8 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       <div slot="toolbar" class="toolbar-actions">
         <osx-badge tone="success" size="small" dot>LOCAL-FIRST</osx-badge>
         <span v-if="state" class="toolbar-summary">{{ state.metrics.readyMoves }} moves · {{ state.metrics.evidenceItems }} evidence items</span>
-        <osx-button size="small" icon="refresh" :loading="actionBusy" @click="refresh">Refresh signals</osx-button>
+        <osx-button v-if="state && !state.onboarding.required" size="small" icon="plus" @click="view = 'onboarding'">Add product</osx-button>
+        <osx-button size="small" icon="refresh" :loading="actionBusy" @click="refresh">Reload evidence</osx-button>
       </div>
 
       <nav slot="sidebar" class="source-list" aria-label="Distribution workspace">
@@ -133,21 +153,23 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 
       <osx-alert v-else-if="error && !state" tone="danger" title="Local service unavailable">{{ error }}</osx-alert>
 
+      <ProductOnboarding v-else-if="state && (state.onboarding.required || view === 'onboarding')" :busy="onboardingBusy" :error="error" @submit="createProduct" />
+
       <main v-else-if="state && view === 'command'" class="command-center">
         <osx-alert v-if="error" tone="danger" title="Action needs attention" dismissible @dismiss="error = ''">{{ error }}</osx-alert>
         <header class="command-hero">
           <div>
             <p class="eyebrow">TODAY'S DISTRIBUTION BRIEF</p>
-            <h1>Three moves worth making.</h1>
+            <h1>{{ state.metrics.readyMoves === 0 ? "No forced activity." : state.metrics.readyMoves === 1 ? "One move worth making." : `${state.metrics.readyMoves} moves worth making.` }}</h1>
             <p>Each move is grounded in product evidence, matched to an audience, and bounded by your channel policy.</p>
           </div>
-          <div class="system-score"><span>System confidence</span><strong>89%</strong><small>Evidence is current</small></div>
+          <div class="system-score"><span>Evidence confidence</span><strong>{{ state.metrics.analysisConfidence }}%</strong><small>Derived from source coverage</small></div>
         </header>
 
         <section class="metric-grid" aria-label="Distribution metrics">
           <article><span>Ready moves</span><strong>{{ state.metrics.readyMoves }}</strong><small>Ranked by usefulness</small></article>
           <article><span>Approved</span><strong>{{ state.metrics.approvedMoves }}</strong><small>Waiting for execution</small></article>
-          <article><span>Product evidence</span><strong>{{ state.metrics.evidenceItems }}</strong><small>Across {{ state.products.length }} products</small></article>
+          <article><span>Product evidence</span><strong>{{ state.metrics.evidenceItems }}</strong><small>Across {{ state.products.length }} product{{ state.products.length === 1 ? "" : "s" }}</small></article>
           <article><span>Live connectors</span><strong>{{ state.metrics.connectedChannels }}</strong><small>Manual gates active</small></article>
         </section>
 
@@ -182,13 +204,15 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       </main>
 
       <main v-else-if="state && view === 'memory'" class="workspace-page">
-        <header><p class="eyebrow">PRODUCT MEMORY</p><h1>The truth Distribution-OS can use.</h1><p>Only verified product facts should become public claims.</p></header>
+        <header class="page-header-with-action"><div><p class="eyebrow">PRODUCT MEMORY</p><h1>The truth Distribution-OS can use.</h1><p>Intent, public claims, and implementation evidence remain distinct.</p></div><osx-button variant="primary" icon="plus" @click="view = 'onboarding'">Add product</osx-button></header>
         <div class="product-grid">
           <article v-for="product in state.products" :key="product.id" class="product-card">
-            <div><span class="product-monogram">{{ product.name.charAt(0) }}</span><osx-badge tone="success" size="small">{{ product.stage }}</osx-badge></div>
+            <div><span class="product-monogram">{{ product.name.charAt(0) }}</span><osx-badge tone="success" size="small">{{ product.confidence }}% evidence</osx-badge></div>
             <h2>{{ product.name }}</h2><p>{{ product.description }}</p>
-            <footer><strong>{{ product.evidenceCount }} evidence items</strong><osx-link :href="product.repositoryUrl" external>Repository</osx-link></footer>
+            <dl class="product-brief"><div><dt>Audience</dt><dd>{{ product.audience }}</dd></div><div><dt>Objective</dt><dd>{{ product.objective }}</dd></div></dl>
+            <footer><strong>{{ product.evidenceCount }} evidence items · {{ product.stage }}</strong><osx-link v-if="product.websiteUrl || product.repositoryUrl" :href="product.websiteUrl || product.repositoryUrl" external>Open source</osx-link></footer>
           </article>
+          <button class="add-product-card" @click="view = 'onboarding'"><osx-icon name="plus" size="24"></osx-icon><strong>Add another product</strong><span>Repository, URL, document, or pasted context</span></button>
         </div>
       </main>
 
@@ -253,7 +277,10 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </section>
         <section class="evidence-panel">
           <h3>What proves it</h3>
-          <a v-for="item in selected.evidence" :key="item.id" :href="item.sourceUrl" target="_blank" rel="noreferrer"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-icon name="external" size="14"></osx-icon></a>
+          <template v-for="item in selected.evidence" :key="item.id">
+            <a v-if="item.sourceUrl" :href="item.sourceUrl" target="_blank" rel="noreferrer"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-icon name="external" size="14"></osx-icon></a>
+            <div v-else class="evidence-static"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-badge size="small">{{ item.classification }}</osx-badge></div>
+          </template>
         </section>
         <section class="draft-panel">
           <div><h3>Proposed contribution</h3><osx-badge size="small">Editable</osx-badge></div>

@@ -20,9 +20,11 @@ Product evidence
 The first vertical slice includes:
 
 - A private SQLite ledger stored outside the repository
-- Product memory for Aperta and OSX Components
+- Universal product onboarding from pasted context, public URLs, local repositories, PDF, DOCX, Markdown, and text files
+- Evidence classification that keeps intent, public claims, and implementation proof distinct
+- A founder-reviewed product brief, audience, objective, and positioning hypothesis
 - Evidence-backed opportunity scoring
-- A three-move daily command center
+- An initial product narrative derived from the sources the user supplied
 - Editable drafts and approve/skip decisions
 - Channel autonomy policies
 - A durable distribution journal
@@ -50,6 +52,20 @@ Distribution-OS separates the private control plane from optional execution infr
 - Cross-channel outcome collection
 
 The local database defaults to `~/.distribution-os/distribution-os.sqlite`. Set `DISTRIBUTION_OS_DATA_DIR` to override it.
+
+## Onboard a product
+
+Start the app and choose **Add Product**. A product can begin with code, but does not require it. Supported sources are:
+
+- Pasted PRDs, pitches, prompts, and product notes
+- Public product, documentation, and marketplace URLs
+- Local repository folders (bounded scan of documentation and project manifests)
+- PDF and DOCX documents
+- Markdown, text, JSON, YAML, and HTML files
+
+Distribution-OS does not treat those sources as interchangeable. Documents establish intent, public URLs establish public claims, and repositories establish implementation evidence. The first confidence score is derived from source coverage and corroboration rather than a model assertion.
+
+No channel is connected and nothing is published during onboarding.
 
 ## Monetization boundary
 
@@ -94,3 +110,4 @@ npm start
 4. Autonomy is granted per channel and action class.
 5. The system optimizes for qualified outcomes, not empty impressions.
 6. Memory prevents repetition, audience fatigue, and synthetic engagement.
+7. Confidence must be calculated from visible evidence, never hardcoded.

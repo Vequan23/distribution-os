@@ -2,6 +2,8 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { DistributionDatabase } from "./database.ts";
+import { ingestSources } from "./ingestion.ts";
+import type { OnboardProductInput, OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
 const database = new DistributionDatabase();
@@ -22,7 +24,7 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > 1_000_000) throw new Error("Request body is too large");
+    if (size > 12_000_000) throw new Error("Request body is too large");
     chunks.push(buffer);
   }
   if (!chunks.length) return {};
@@ -67,6 +69,24 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/refresh") {
       database.recordRefresh();
       json(response, 200, database.getDashboard());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/products/onboard") {
+      const body = await readJson(request);
+      const input: OnboardProductInput = {
+        name: String(body.name || ""),
+        description: String(body.description || ""),
+        stage: String(body.stage || "early"),
+        audience: String(body.audience || ""),
+        objective: String(body.objective || ""),
+        positioning: String(body.positioning || ""),
+        websiteUrl: typeof body.websiteUrl === "string" ? body.websiteUrl : "",
+        repositoryUrl: typeof body.repositoryUrl === "string" ? body.repositoryUrl : "",
+        sources: Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : [],
+      };
+      const sources = await ingestSources(input.sources);
+      const productId = database.onboardProduct(input, sources);
+      json(response, 201, { productId, dashboard: database.getDashboard() });
       return;
     }
     const decisionMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/decision$/);

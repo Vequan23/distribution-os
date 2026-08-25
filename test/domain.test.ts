@@ -13,17 +13,42 @@ test("opportunity scoring rewards relevance and usefulness while penalizing prom
   assert.ok(strong <= 100 && strong >= 0);
 });
 
-test("local database seeds evidence-backed moves and persists human decisions", () => {
+test("local database starts honestly and persists an evidence-backed onboarding", () => {
   const directory = mkdtempSync(join(tmpdir(), "distribution-os-test-"));
   const database = new DistributionDatabase(directory);
   try {
     const initial = database.getDashboard();
     assert.equal(initial.storage.mode, "local");
-    assert.equal(initial.products.length, 2);
-    assert.equal(initial.metrics.readyMoves, 3);
-    assert.ok(initial.opportunities.every((item) => item.evidence.length > 0));
+    assert.equal(initial.products.length, 0);
+    assert.equal(initial.metrics.readyMoves, 0);
+    assert.equal(initial.onboarding.required, true);
 
-    const first = initial.opportunities[0];
+    database.onboardProduct({
+      name: "Proof Product",
+      description: "A product that makes distribution recommendations traceable to source evidence.",
+      stage: "prototype",
+      audience: "Technical founders",
+      objective: "Find the first 20 active users",
+      positioning: "Distribution decisions with visible proof.",
+      sources: [],
+    }, [{
+      type: "text",
+      label: "Founder brief",
+      sourceUrl: "",
+      summary: "Technical founders need distribution decisions that can be inspected and corrected.",
+      excerpt: "Technical founders need distribution decisions that can be inspected and corrected.",
+      classification: "intent",
+      confidence: 52,
+    }]);
+
+    const onboarded = database.getDashboard();
+    assert.equal(onboarded.products.length, 1);
+    assert.equal(onboarded.onboarding.required, false);
+    assert.equal(onboarded.metrics.readyMoves, 1);
+    assert.equal(onboarded.metrics.analysisConfidence, 42);
+    assert.ok(onboarded.opportunities.every((item) => item.evidence.length > 0));
+
+    const first = onboarded.opportunities[0];
     database.decideOpportunity(first.id, "approve", `${first.draftCopy}\n\nEdited by the founder.`);
     const updated = database.getDashboard();
     const approved = updated.opportunities.find((item) => item.id === first.id);
