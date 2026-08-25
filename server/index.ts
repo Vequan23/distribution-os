@@ -7,6 +7,7 @@ import { AIControlPlaneStore } from "./ai-control-plane.ts";
 import { NativeModelExecutor } from "./model-executor.ts";
 import { synthesizeProductBrief } from "./onboarding-harness.ts";
 import { generateDistributionPlan } from "./distribution-harness.ts";
+import { writeContributionDraft } from "./contribution-harness.ts";
 import { AgentRuntimeExecutor } from "./runtime-executor.ts";
 import { isProductStage, type ChannelMode, type OnboardProductInput, type OnboardingSourceInput } from "./domain.ts";
 
@@ -176,8 +177,27 @@ const server = createServer(async (request, response) => {
       const inputs = Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : [];
       if (inputs.some((source) => source.type !== "text" && source.type !== "url")) throw new Error("Audience signals must be pasted context or a public URL.");
       const sources = await ingestSources(inputs);
-      const count = database.addAudienceSignals(decodeURIComponent(signalMatch[1]), sources);
-      json(response, 201, { count, dashboard: database.getDashboard() });
+      const result = database.addSignalCandidates(decodeURIComponent(signalMatch[1]), sources);
+      json(response, 201, { count: result.insertedCount, signalIds: result.signalIds, dashboard: database.getDashboard() });
+      return;
+    }
+    const signalInboxMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/signals\/inbox$/);
+    if (request.method === "POST" && signalInboxMatch) {
+      const body = await readJson(request);
+      const inputs = Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : [];
+      if (inputs.some((source) => source.type !== "text" && source.type !== "url")) throw new Error("Signal candidates must be pasted context or a public URL.");
+      const sources = await ingestSources(inputs);
+      const result = database.addSignalCandidates(decodeURIComponent(signalInboxMatch[1]), sources);
+      json(response, 201, { ...result, dashboard: database.getDashboard() });
+      return;
+    }
+    const signalDecisionMatch = url.pathname.match(/^\/api\/signals\/([^/]+)\/decision$/);
+    if (request.method === "POST" && signalDecisionMatch) {
+      const body = await readJson(request);
+      const action = String(body.action || "");
+      if (!(action === "accept" || action === "dismiss" || action === "restore")) throw new Error("Signal action must be accept, dismiss, or restore.");
+      database.decideSignalCandidate(decodeURIComponent(signalDecisionMatch[1]), action);
+      json(response, 200, database.getDashboard());
       return;
     }
     const runMatch = url.pathname.match(/^\/api\/harness\/runs\/([^/]+)$/);
@@ -199,6 +219,12 @@ const server = createServer(async (request, response) => {
         typeof body.draftCopy === "string" ? body.draftCopy : undefined,
       );
       json(response, 200, database.getDashboard());
+      return;
+    }
+    const draftMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/draft$/);
+    if (request.method === "POST" && draftMatch) {
+      const result = await writeContributionDraft(decodeURIComponent(draftMatch[1]), modelExecutor, database);
+      json(response, 200, { result, dashboard: database.getDashboard() });
       return;
     }
     const outcomeMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/outcomes$/);

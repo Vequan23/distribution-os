@@ -6,6 +6,7 @@ import test from "node:test";
 import { AIControlPlaneStore } from "../server/ai-control-plane.ts";
 import { DistributionDatabase } from "../server/database.ts";
 import { generateDistributionPlan, localFallbackPlan, missingRequiredPlanningTools, planSchema } from "../server/distribution-harness.ts";
+import { missingRequiredDraftTools, writeContributionDraft } from "../server/contribution-harness.ts";
 import { buildProductBrief } from "../server/ingestion.ts";
 import type { NativeModelExecutor } from "../server/model-executor.ts";
 import { synthesizeProductBrief } from "../server/onboarding-harness.ts";
@@ -192,6 +193,33 @@ test("fallback plans always cite independent product evidence before audience ob
 test("required planning tools cannot be skipped silently", () => {
   assert.deepEqual(missingRequiredPlanningTools(["readProductMemory", "readProductEvidence"]), ["readAudienceSignals", "readChannelPolicies", "readOutcomeMemory"]);
   assert.deepEqual(missingRequiredPlanningTools(["readProductMemory", "readProductEvidence", "readAudienceSignals", "readChannelPolicies", "readOutcomeMemory"]), []);
+});
+
+test("contribution writing preserves a cited local draft when no model is configured", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-draft-"));
+  const database = new DistributionDatabase(directory);
+  try {
+    const productId = seedProduct(database);
+    const opportunity = database.getDashboard().opportunities.find((item) => item.productId === productId);
+    assert.ok(opportunity);
+    const executor = { activeLanguageModel: async () => null } as unknown as NativeModelExecutor;
+    const result = await writeContributionDraft(opportunity.id, executor, database);
+    assert.equal(result.mode, "fallback");
+    assert.ok(result.draftCopy.length >= 20);
+    assert.deepEqual(result.citationLabels, ["Founder brief"]);
+    const run = database.getHarnessRun(result.runId);
+    assert.equal(run.kind, "contribution-draft");
+    assert.equal(run.status, "fallback");
+    assert.equal(database.getDashboard().opportunities.find((item) => item.id === opportunity.id)?.draftCopy, result.draftCopy);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("required contribution-writing tools cannot be skipped silently", () => {
+  assert.deepEqual(missingRequiredDraftTools(["readOpportunity"]), ["readSupportingEvidence"]);
+  assert.deepEqual(missingRequiredDraftTools(["readOpportunity", "readSupportingEvidence"]), []);
 });
 
 test("runtime failures persist only normalized diagnostics", async () => {

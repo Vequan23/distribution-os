@@ -153,8 +153,13 @@ input, textarea, select { font-size: 13px; }
 .evidence-panel a strong, .evidence-panel .evidence-static strong { color: #d5e1e6; font-size: 12px; }
 .evidence-panel a small, .evidence-panel .evidence-static small { color: #83969f; font-size: 12px; line-height: 1.4; }
 .draft-panel > div { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.draft-panel > div > span { min-width: 0; display: grid; gap: 2px; }
+.draft-panel > div h3 { margin-bottom: 0; }
+.draft-panel > div small { color: #718791; font-size: 12px; line-height: 1.4; }
+.draft-panel > osx-alert { display: block; margin-top: 10px; }
 .draft-panel textarea { width: 100%; min-height: 190px; resize: vertical; margin-top: 4px; padding: 11px; border: 1px solid #3f535d; border-radius: 7px; outline: 0; color: #d7e4e9; background: #0b1419; font-size: 12px; line-height: 1.55; }
 .draft-panel textarea:focus { border-color: #3fa6d1; box-shadow: 0 0 0 3px rgba(43,151,198,.2); }
+.draft-panel > footer { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-top: 9px; color: #718791; font-size: 12px; line-height: 1.4; }
 .decision-bar { display: flex; justify-content: space-between; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid #34454d; }
 
 .workspace-page > header { margin-bottom: 22px; }
@@ -188,6 +193,27 @@ input, textarea, select { font-size: 13px; }
 .signal-list strong { color: #dce8ed; font-size: 13px; }
 .signal-list p { margin: 0; color: #9caeb6; font-size: 12px; line-height: 1.5; }
 .signal-list small { color: #728791; font-size: 12px; }
+.heading-actions { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-items: center; }
+.signal-capture-panel { margin-top: 0; }
+.signal-inbox-section, .reviewed-signals-section { margin-top: 16px; padding: 17px; border: 1px solid #344750; border-radius: 10px; background: linear-gradient(135deg, #17252c, #0f191e); }
+.signal-inbox-list { display: grid; gap: 10px; }
+.signal-candidate-card { min-width: 0; display: grid; grid-template-columns: 42px minmax(0,1fr) 82px; gap: 13px; padding: 15px; border: 1px solid #354b55; border-radius: 9px; background: #101b20; box-shadow: 0 1px rgba(255,255,255,.04) inset; }
+.signal-candidate-card:hover { border-color: #3e6f83; }
+.signal-candidate-copy { min-width: 0; }
+.signal-candidate-copy > div { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: #758a94; font-size: 12px; }
+.signal-candidate-copy h3 { margin: 8px 0 5px; color: #dce8ed; font-size: 15px; line-height: 1.35; }
+.signal-candidate-copy p { margin: 0; color: #a2b2b9; font-size: 13px; line-height: 1.55; }
+.signal-candidate-copy > small { display: block; margin-top: 8px; color: #718690; font-size: 12px; line-height: 1.45; }
+.signal-relevance { display: grid; align-content: start; justify-items: end; }
+.signal-relevance strong { color: #70c8ec; font: 400 27px Georgia,serif; }
+.signal-relevance span { color: #718690; font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+.signal-candidate-card > footer { grid-column: 2 / -1; display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-top: 11px; border-top: 1px solid #2d4048; color: #718690; font-size: 12px; }
+.signal-candidate-card > footer > div { display: inline-flex; gap: 8px; align-items: center; }
+.reviewed-signal-list { display: grid; gap: 7px; }
+.reviewed-signal-list article { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid #30434c; border-radius: 8px; background: #101a1f; }
+.reviewed-signal-list article > div { min-width: 0; display: grid; gap: 3px; }
+.reviewed-signal-list strong { overflow: hidden; color: #cbd8de; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.reviewed-signal-list small { color: #718690; font-size: 12px; }
 .channel-card > header { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; gap: 10px; align-items: center; }
 .channel-card h2 { margin: 0; }
 .channel-card dl { margin: 15px 0; }
@@ -292,6 +318,7 @@ input, textarea, select { font-size: 13px; }
   .metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .audience-grid { grid-template-columns: 1fr; }
   .signal-form { grid-template-columns: 1fr; }.signal-form label.wide, .signal-form footer { grid-column: auto; }.signal-form footer { align-items: stretch; flex-direction: column; }.signal-list article { grid-template-columns: 38px minmax(0,1fr); }.signal-list article > osx-link { grid-column: 2; }
+  .signal-candidate-card { grid-template-columns: 38px minmax(0,1fr) 72px; }
   .opportunity-card { grid-template-columns: 34px minmax(0,1fr) 58px; }
   .source-type-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .runtime-grid { grid-template-columns: 1fr; }
@@ -316,6 +343,7 @@ input, textarea, select { font-size: 13px; }
   .ownership-grid { grid-template-columns: 1fr; }
   .provider-layout { grid-template-columns: 1fr; }.provider-list { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid #354951; }.provider-list button { min-width: 150px; }
   .provider-form footer { align-items: start; flex-direction: column; }
+  .signal-candidate-card { grid-template-columns: 38px minmax(0,1fr); }.signal-relevance { grid-column: 2; grid-row: 1; }.signal-candidate-card > footer { grid-column: 2; align-items: stretch; flex-direction: column; }.signal-candidate-card > footer > div { flex-wrap: wrap; }.draft-panel > footer { align-items: stretch; flex-direction: column; }
   .campaign-row { grid-template-columns: 12px minmax(0,1fr) auto; }.campaign-actions { grid-column: 2 / -1; flex-wrap: wrap; }.outcome-form { grid-template-columns: 1fr; }.outcome-form label.wide, .outcome-form footer { grid-column: auto; }
 }
 
@@ -337,4 +365,5 @@ input, textarea, select { font-size: 13px; }
   .runtime-card footer { align-items: start; flex-direction: column; }
   .provider-form-grid { grid-template-columns: 1fr; }.provider-form label.wide { grid-column: auto; }
   .profile-list article { grid-template-columns: 36px minmax(0,1fr); }.profile-list article > osx-badge, .profile-list article > osx-button, .profile-list article > .profile-actions { grid-column: 2; justify-self: start; }
+  .reviewed-signal-list article { grid-template-columns: minmax(0,1fr) auto; }.reviewed-signal-list article > osx-button { grid-column: 1 / -1; justify-self: start; }
 }

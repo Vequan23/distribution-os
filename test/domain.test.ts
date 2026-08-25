@@ -21,6 +21,7 @@ test("local database starts honestly and persists an evidence-backed onboarding"
     assert.equal(initial.storage.mode, "local");
     assert.equal(initial.products.length, 0);
     assert.equal(initial.metrics.readyMoves, 0);
+    assert.equal(initial.metrics.newSignals, 0);
     assert.equal(initial.onboarding.required, true);
 
     database.onboardProduct({
@@ -66,6 +67,25 @@ test("local database starts honestly and persists an evidence-backed onboarding"
       name: "Bad stage", description: "Invalid stage test", stage: "growing" as never, audience: "Testers", objective: "Reject bad stages", positioning: "",
       sources: [],
     }, [{ type: "text", label: "Brief", sourceUrl: "", summary: "A valid source for an invalid product stage.", excerpt: "A valid source for an invalid product stage.", classification: "intent", confidence: 52 }]), /supported product stage/i);
+
+    const productId = onboarded.products[0]?.id;
+    assert.ok(productId);
+    const captured = database.addSignalCandidates(productId, [{
+      type: "text", label: "Founder question", sourceUrl: "", summary: "How do I distribute a technical product without spamming people?", excerpt: "How do I distribute a technical product without spamming people?", classification: "intent", confidence: 52,
+    }]);
+    assert.equal(captured.insertedCount, 1);
+    let signalState = database.getDashboard();
+    assert.equal(signalState.metrics.newSignals, 1);
+    assert.equal(signalState.signalInbox[0]?.kind, "question");
+    assert.equal(signalState.audienceSignals.length, 0);
+    database.decideSignalCandidate(captured.signalIds[0], "accept");
+    signalState = database.getDashboard();
+    assert.equal(signalState.metrics.newSignals, 0);
+    assert.equal(signalState.signalInbox[0]?.status, "accepted");
+    assert.equal(signalState.audienceSignals.length, 1);
+    database.decideSignalCandidate(captured.signalIds[0], "accept");
+    assert.equal(database.getDashboard().audienceSignals.length, 1);
+    assert.throws(() => database.decideSignalCandidate(captured.signalIds[0], "restore"), /cannot be moved back/i);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

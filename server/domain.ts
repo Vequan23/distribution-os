@@ -11,9 +11,11 @@ export type ModelProviderId = "openai" | "anthropic" | "google" | "deepseek" | "
 export type AgentRuntimeId = "native" | "claude-code" | "cursor" | "opencode" | "codex";
 export type RuntimeAvailability = "available" | "setup-required" | "missing";
 export type AnalysisMode = "local" | "ai" | "fallback";
-export type HarnessRunKind = "onboarding" | "distribution-plan" | "runtime-task";
+export type HarnessRunKind = "onboarding" | "distribution-plan" | "contribution-draft" | "runtime-task";
 export type HarnessRunStatus = "running" | "completed" | "failed" | "fallback";
 export type HarnessStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type SignalStatus = "new" | "accepted" | "dismissed";
+export type SignalKind = "question" | "pain" | "request" | "mention" | "unknown";
 
 export interface ProviderCatalogEntry {
   id: ModelProviderId;
@@ -108,6 +110,24 @@ export interface Evidence {
 export interface AudienceSignal extends Evidence {
   productId: string;
   productName: string;
+}
+
+export interface SignalCandidate {
+  id: string;
+  productId: string;
+  productName: string;
+  kind: SignalKind;
+  title: string;
+  summary: string;
+  excerpt: string;
+  sourceUrl: string;
+  sourceType: "text" | "url";
+  confidence: number;
+  relevance: number;
+  reason: string;
+  status: SignalStatus;
+  capturedAt: string;
+  decidedAt: string;
 }
 
 export interface OnboardingSourceInput {
@@ -225,6 +245,19 @@ export interface PlanApplication {
   opportunityIds: string[];
 }
 
+export interface ContributionDraftResult {
+  runId: string;
+  opportunityId: string;
+  draftCopy: string;
+  hook: string;
+  callToAction: string;
+  citationLabels: string[];
+  mode: AnalysisMode;
+  provider: string;
+  model: string;
+  warning: string;
+}
+
 export interface Opportunity {
   id: string;
   productId: string;
@@ -269,6 +302,7 @@ export interface DashboardState {
     readyMoves: number;
     approvedMoves: number;
     evidenceItems: number;
+    newSignals: number;
     connectedChannels: number;
     analysisConfidence: number;
   };
@@ -279,6 +313,7 @@ export interface DashboardState {
   products: Product[];
   channels: Channel[];
   opportunities: Opportunity[];
+  signalInbox: SignalCandidate[];
   audienceSignals: AudienceSignal[];
   recentEvents: DistributionEvent[];
   harnessRuns: HarnessRun[];

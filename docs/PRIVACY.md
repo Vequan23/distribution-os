@@ -5,7 +5,7 @@ Distribution-OS is local-first because product positioning, founder voice, draft
 ## Stored locally
 
 - Approved product memory and bounded source excerpts
-- Public discussion URLs or bounded audience excerpts the founder explicitly adds
+- Public discussion URLs or bounded audience excerpts the founder explicitly captures, including dismissed Signal Inbox candidates retained as decision history
 - Generated drafts and opportunity evidence links
 - Human decisions and manually captured outcomes
 - Harness run/step metadata and concise failure diagnostics

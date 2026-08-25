@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import { activateAgentRuntime, activateModelProfile, addProductAudienceSignals, decideOpportunity, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, recordOpportunityOutcome, refreshWorkspace, saveModelProfile, testModelProfile, updateChannelPolicy } from "./api.ts";
+import { activateAgentRuntime, activateModelProfile, captureProductSignals, decideOpportunity, decideSignal, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, recordOpportunityOutcome, refreshWorkspace, saveModelProfile, testModelProfile, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
 import type { AIControlPlane, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
 
-type View = "command" | "onboarding" | "memory" | "audience" | "campaigns" | "channels" | "journal" | "harness" | "settings";
+type View = "command" | "onboarding" | "memory" | "signals" | "audience" | "campaigns" | "channels" | "journal" | "harness" | "settings";
 
 const state = ref<DashboardState | null>(null);
 const view = ref<View>("command");
@@ -28,8 +28,11 @@ const testingProfileId = ref("");
 const outcomeOpportunityId = ref("");
 const outcomeForm = reactive({ metric: "qualified-visits", value: 0, note: "" });
 const signalBusy = ref(false);
-const signalNotice = ref<{ tone: "success" | "danger"; title: string; detail: string } | null>(null);
+const signalActionId = ref("");
+const signalNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const signalForm = reactive({ productId: "", type: "text" as "text" | "url", label: "", value: "" });
+const draftBusy = ref(false);
+const draftNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const channelEditingId = ref("");
 const channelNotice = ref<{ tone: "success" | "danger"; title: string; detail: string } | null>(null);
 const channelForm = reactive<{ mode: ChannelMode; dailyLimit: number }>({ mode: "approval", dailyLimit: 1 });
@@ -44,6 +47,8 @@ const selected = computed(() => {
     ?? null;
 });
 const approved = computed(() => state.value?.opportunities.filter((item) => item.status === "approved") ?? []);
+const newSignals = computed(() => state.value?.signalInbox.filter((item) => item.status === "new") ?? []);
+const reviewedSignals = computed(() => state.value?.signalInbox.filter((item) => item.status !== "new") ?? []);
 const activeRuntime = computed(() => ai.value?.runtimes.find((runtime) => runtime.id === ai.value?.execution.runtimeId) ?? null);
 const activeModelProfile = computed(() => ai.value?.profiles.find((profile) => profile.id === ai.value?.execution.modelProfileId) ?? null);
 const selectedProvider = computed(() => ai.value?.providers.find((provider) => provider.id === profileForm.provider));
@@ -186,7 +191,7 @@ async function createProduct(input: OnboardProductInput): Promise<void> {
   }
 }
 
-async function addAudienceSignal(): Promise<void> {
+async function captureSignal(): Promise<void> {
   signalNotice.value = null;
   if (!signalForm.productId || !signalForm.value.trim()) {
     signalNotice.value = { tone: "danger", title: "Signal needs context", detail: "Choose a product and add a public URL or a bounded discussion excerpt." };
@@ -205,15 +210,53 @@ async function addAudienceSignal(): Promise<void> {
       label: signalForm.label.trim() || (signalForm.type === "url" ? "Audience source" : "Founder-supplied discussion signal"),
       value: signalForm.value.trim(),
     };
-    const result = await addProductAudienceSignals(signalForm.productId, [source]);
+    const result = await captureProductSignals(signalForm.productId, [source]);
     state.value = result.dashboard;
     signalForm.label = "";
     signalForm.value = "";
-    signalNotice.value = { tone: "success", title: "Audience signal added", detail: "The observation is now separately labeled evidence for the next plan. It is not treated as verified demand or a live trend." };
+    signalNotice.value = result.insertedCount
+      ? { tone: "success", title: "Signal captured for review", detail: "It remains outside product evidence until you inspect and accept it. Nothing has been promoted into a trend or demand claim." }
+      : { tone: "warning", title: "Signal already captured", detail: "An equivalent source is already represented in the inbox, so no duplicate was added." };
   } catch (cause) {
     signalNotice.value = { tone: "danger", title: "Signal could not be added", detail: cause instanceof Error ? cause.message : "The source could not be imported." };
   } finally {
     signalBusy.value = false;
+  }
+}
+
+async function reviewSignal(id: string, action: "accept" | "dismiss" | "restore"): Promise<void> {
+  signalActionId.value = id;
+  signalNotice.value = null;
+  try {
+    state.value = await decideSignal(id, action);
+    signalNotice.value = action === "accept"
+      ? { tone: "success", title: "Signal accepted as evidence", detail: "The bounded observation can now support a plan, but it remains labeled as audience evidence—not verified demand." }
+      : action === "dismiss"
+        ? { tone: "warning", title: "Signal dismissed", detail: "The candidate will not influence planning. You can restore it from reviewed signals." }
+        : { tone: "success", title: "Signal restored", detail: "The candidate is back in the review inbox." };
+  } catch (cause) {
+    signalNotice.value = { tone: "danger", title: "Signal decision failed", detail: cause instanceof Error ? cause.message : "The decision could not be recorded." };
+  } finally {
+    signalActionId.value = "";
+  }
+}
+
+async function writeDraft(): Promise<void> {
+  if (!selected.value) return;
+  draftBusy.value = true;
+  draftNotice.value = null;
+  error.value = "";
+  try {
+    const response = await writeOpportunityDraft(selected.value.id);
+    state.value = response.dashboard;
+    draft.value = response.result.draftCopy;
+    draftNotice.value = response.result.mode === "ai"
+      ? { tone: "success", title: `${selected.value.channelName} draft written`, detail: `${response.result.provider} · ${response.result.model} produced a source-cited draft. Review and edit it before approval.` }
+      : { tone: "warning", title: "Local draft preserved", detail: response.result.warning };
+  } catch (cause) {
+    draftNotice.value = { tone: "danger", title: "Draft could not be written", detail: cause instanceof Error ? cause.message : "The contribution writer failed." };
+  } finally {
+    draftBusy.value = false;
   }
 }
 
@@ -310,6 +353,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
   { id: "command", label: "Command Center", icon: "dashboard", section: "OPERATE" },
   { id: "onboarding", label: "Add Product", icon: "plus", section: "UNDERSTAND" },
   { id: "memory", label: "Product Memory", icon: "boxes" },
+  { id: "signals", label: "Signal Inbox", icon: "inbox" },
   { id: "audience", label: "Audience Map", icon: "user" },
   { id: "campaigns", label: "Campaigns", icon: "send", section: "EXECUTE" },
   { id: "channels", label: "Channels", icon: "activity" },
@@ -350,6 +394,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             <osx-icon :name="item.icon" :size="18"></osx-icon>
             <span>{{ item.label }}</span>
             <b v-if="item.id === 'command' && state">{{ state.metrics.readyMoves }}</b>
+            <b v-else-if="item.id === 'signals' && state && state.metrics.newSignals">{{ state.metrics.newSignals }}</b>
             <b v-else-if="item.id === 'campaigns' && approved.length">{{ approved.length }}</b>
           </button>
         </template>
@@ -443,6 +488,48 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </div>
       </main>
 
+      <main v-else-if="state && view === 'signals'" class="workspace-page">
+        <header class="page-header-with-action">
+          <div><p class="eyebrow">SIGNAL INBOX</p><h1>Observe first. Infer carefully.</h1><p>Potential audience evidence stays quarantined until you inspect it. Accepting a signal makes the bounded observation citable; it never turns one comment into a trend.</p></div>
+          <osx-badge :tone="newSignals.length ? 'warning' : 'success'" dot>{{ newSignals.length }} awaiting review</osx-badge>
+        </header>
+
+        <section v-if="state.products.length" class="audience-signal-panel signal-capture-panel">
+          <div class="section-heading"><div><p class="eyebrow">CAPTURE</p><h2>Add a real observation</h2><p>Paste the relevant part of a public discussion or import its URL. Read-only platform connectors will feed this same inbox later.</p></div><osx-badge tone="info">Manual source</osx-badge></div>
+          <form class="signal-form" @submit.prevent="captureSignal">
+            <label>Product<select v-model="signalForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
+            <label>Source type<select v-model="signalForm.type"><option value="text">Paste discussion context</option><option value="url">Public URL</option></select></label>
+            <label>Source label <small>Make citations recognizable</small><input v-model="signalForm.label" placeholder="Example: Hacker News launch discussion" /></label>
+            <label class="wide">{{ signalForm.type === 'url' ? 'Public discussion URL' : 'What did the audience say or ask?' }}
+              <input v-if="signalForm.type === 'url'" v-model="signalForm.value" type="url" placeholder="https://…" />
+              <textarea v-else v-model="signalForm.value" rows="5" placeholder="Paste only the relevant public excerpt or your own bounded observation. Preserve uncertainty and context."></textarea>
+            </label>
+            <footer><span>Capture does not approve evidence, contact anyone, or publish anything.</span><osx-button type="button" variant="primary" icon="plus" :loading="signalBusy" :disabled="!signalForm.value.trim()" @click="captureSignal">Capture signal</osx-button></footer>
+          </form>
+          <osx-alert v-if="signalNotice" :tone="signalNotice.tone" :title="signalNotice.title" dismissible @dismiss="signalNotice = null">{{ signalNotice.detail }}</osx-alert>
+        </section>
+
+        <osx-empty-state v-else class="page-empty-state" icon="inbox" title="Add a product before collecting signals">Signals need a product, audience hypothesis, and objective so their relevance can be judged.<osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button></osx-empty-state>
+
+        <section v-if="state.products.length" class="signal-inbox-section">
+          <div class="section-heading"><div><p class="eyebrow">REVIEW QUEUE</p><h2>Is this useful evidence?</h2><p>Accept only observations specific enough to change a distribution decision.</p></div><osx-badge>{{ newSignals.length }} new</osx-badge></div>
+          <div v-if="newSignals.length" class="signal-inbox-list">
+            <article v-for="signal in newSignals" :key="signal.id" class="signal-candidate-card">
+              <span class="signal-icon"><osx-icon :name="signal.kind === 'question' ? 'help-circle' : signal.kind === 'pain' ? 'alert-circle' : signal.kind === 'request' ? 'message-circle' : 'search'" :size="19"></osx-icon></span>
+              <div class="signal-candidate-copy"><div><osx-badge tone="info" size="small">{{ signal.kind }}</osx-badge><span>{{ signal.productName }} · {{ formatDate(signal.capturedAt) }}</span></div><h3>{{ signal.title }}</h3><p>{{ signal.summary }}</p><small>{{ signal.reason }}</small></div>
+              <div class="signal-relevance"><strong>{{ signal.relevance }}</strong><span>RELEVANCE</span></div>
+              <footer><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Inspect source</osx-link><span v-else>Founder-supplied excerpt</span><div><osx-button size="small" :disabled="Boolean(signalActionId)" @click="reviewSignal(signal.id, 'dismiss')">Dismiss</osx-button><osx-button size="small" variant="primary" icon="check" :loading="signalActionId === signal.id" :disabled="Boolean(signalActionId)" @click="reviewSignal(signal.id, 'accept')">Accept as evidence</osx-button></div></footer>
+            </article>
+          </div>
+          <osx-empty-state v-else icon="check" title="Signal inbox reviewed">There are no unreviewed observations. Accepted evidence appears in Audience Map and becomes available to the next planning run.</osx-empty-state>
+        </section>
+
+        <section v-if="reviewedSignals.length" class="reviewed-signals-section">
+          <div class="section-heading"><div><p class="eyebrow">REVIEWED</p><h2>Decision history</h2></div><osx-badge>{{ reviewedSignals.length }} decisions</osx-badge></div>
+          <div class="reviewed-signal-list"><article v-for="signal in reviewedSignals" :key="signal.id"><div><strong>{{ signal.title }}</strong><small>{{ signal.productName }} · {{ formatDate(signal.decidedAt || signal.capturedAt) }}</small></div><osx-badge :tone="signal.status === 'accepted' ? 'success' : 'neutral'" dot>{{ signal.status }}</osx-badge><osx-button v-if="signal.status === 'dismissed'" size="small" :loading="signalActionId === signal.id" @click="reviewSignal(signal.id, 'restore')">Restore</osx-button></article></div>
+        </section>
+      </main>
+
       <main v-else-if="state && view === 'audience'" class="workspace-page">
         <header><p class="eyebrow">AUDIENCE MAP</p><h1>Problems, people, and places.</h1><p>The system optimizes for relevance—not reach without context.</p></header>
         <div v-if="state.products.length" class="audience-grid">
@@ -450,22 +537,11 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </div>
         <osx-empty-state v-else class="page-empty-state" icon="user" title="No audience has been established">Audience hypotheses appear only after a product has been onboarded and reviewed.<osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button></osx-empty-state>
         <section v-if="state.products.length" class="audience-signal-panel">
-          <div class="section-heading"><div><p class="eyebrow">AUDIENCE EVIDENCE</p><h2>Bring the conversation into the loop.</h2><p>Add a public discussion URL or paste a bounded excerpt you observed. Distribution-OS labels it as founder-supplied audience evidence—it never upgrades one observation into a trend.</p></div><osx-badge tone="info">{{ state.audienceSignals?.length || 0 }} signals</osx-badge></div>
-          <form class="signal-form" @submit.prevent="addAudienceSignal">
-            <label>Product<select v-model="signalForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
-            <label>Source type<select v-model="signalForm.type"><option value="text">Paste discussion context</option><option value="url">Public URL</option></select></label>
-            <label>Source label <small>Make citations recognizable</small><input v-model="signalForm.label" placeholder="Example: Hacker News launch discussion" /></label>
-            <label class="wide">{{ signalForm.type === 'url' ? 'Public discussion URL' : 'What did the audience say or ask?' }}
-              <input v-if="signalForm.type === 'url'" v-model="signalForm.value" type="url" placeholder="https://…" />
-              <textarea v-else v-model="signalForm.value" rows="5" placeholder="Paste only the relevant public excerpt or your own bounded observation. Include uncertainty and context."></textarea>
-            </label>
-            <footer><span>Nothing is posted or contacted. This becomes citable input for the next plan.</span><osx-button type="button" variant="primary" icon="plus" :loading="signalBusy" :disabled="!signalForm.value.trim()" @click="addAudienceSignal">Add audience signal</osx-button></footer>
-          </form>
-          <osx-alert v-if="signalNotice" :tone="signalNotice.tone" :title="signalNotice.title" dismissible @dismiss="signalNotice = null">{{ signalNotice.detail }}</osx-alert>
+          <div class="section-heading"><div><p class="eyebrow">ACCEPTED AUDIENCE EVIDENCE</p><h2>Observations allowed into the loop.</h2><p>These signals passed human review. They remain bounded observations and are never represented as verified demand or a representative trend.</p></div><span class="heading-actions"><osx-badge tone="info">{{ state.audienceSignals?.length || 0 }} accepted</osx-badge><osx-button size="small" icon="inbox" @click="view = 'signals'">Open Signal Inbox</osx-button></span></div>
           <div v-if="state.audienceSignals?.length" class="signal-list">
             <article v-for="signal in state.audienceSignals" :key="signal.id"><span class="signal-icon"><osx-icon :name="signal.sourceType === 'url' ? 'globe' : 'message-circle'" :size="18"></osx-icon></span><div><strong>{{ signal.title }}</strong><p>{{ signal.summary }}</p><small>{{ signal.productName }} · {{ formatDate(signal.occurredAt) }} · founder supplied</small></div><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Open source</osx-link></article>
           </div>
-          <osx-empty-state v-else icon="message-circle" title="No audience evidence yet">Product evidence explains what you built. Audience evidence explains what people are discussing. Add one real observation before asking the agent to infer where to contribute.</osx-empty-state>
+          <osx-empty-state v-else icon="message-circle" title="No accepted audience evidence yet">Product evidence explains what you built. Audience evidence explains what people are discussing. Capture and review one real observation before asking the agent to infer where to contribute.<osx-button slot="actions" variant="primary" icon="inbox" @click="view = 'signals'">Open Signal Inbox</osx-button></osx-empty-state>
         </section>
       </main>
 
@@ -634,8 +710,10 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             </template>
           </section>
           <section class="draft-panel">
-            <div><h3>Proposed contribution</h3><osx-badge size="small">Editable</osx-badge></div>
+            <div><span><h3>Channel draft</h3><small>Strategy becomes publishable copy here.</small></span><osx-badge size="small">Editable</osx-badge></div>
+            <osx-alert v-if="draftNotice" :tone="draftNotice.tone" :title="draftNotice.title" dismissible @dismiss="draftNotice = null">{{ draftNotice.detail }}</osx-alert>
             <textarea v-model="draft" aria-label="Proposed contribution draft"></textarea>
+            <footer><span>Uses the opportunity, channel, and cited evidence. Nothing is published.</span><osx-button size="small" icon="sparkle" :loading="draftBusy" :disabled="actionBusy" @click="writeDraft">Write channel draft</osx-button></footer>
           </section>
           <footer class="decision-bar">
             <osx-button size="small" :disabled="actionBusy" @click="decide('skip')">Skip for now</osx-button>

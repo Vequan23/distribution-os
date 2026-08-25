@@ -42,10 +42,12 @@ Every proposed move must answer four questions:
 - Deterministic local brief extraction that works without an AI account
 - Optional schema-validated, source-cited AI synthesis for product onboarding
 - Separate evidence classes for founder intent, public claims, implementation, audience observations, and outcomes
+- A quarantined Signal Inbox where observations must be accepted before they become citable audience evidence
 - Multi-provider model profiles with environment-variable or macOS Keychain credentials
 - A native Vercel AI SDK `ToolLoopAgent` with an enforced evidence-reading sequence
 - Bounded Claude Code, OpenCode, Codex CLI, and Cursor Agent runtime adapters
 - Exact citation verification, one bounded repair attempt, and visible fallback behavior
+- A dedicated channel-native contribution writer that reads the opportunity and its supporting evidence before producing editable copy
 - Editable review queue with approve and skip decisions; no implicit publishing
 - Per-channel policy and daily-limit configuration
 - Durable run ledger containing safe step metadata, failures, fallbacks, decisions, and outcomes
@@ -74,11 +76,13 @@ Open [http://127.0.0.1:4190](http://127.0.0.1:4190). The Vite app proxies the lo
 1. Select **Add Product** and provide at least one product source.
 2. Generate and correct the product brief, then approve it as product memory.
 3. Optionally open **AI Harness** to configure a model API or installed agent runtime.
-4. Add real audience context in **Audience Map** when you have a public discussion or bounded observation worth citing.
-5. Select **Generate plan** from Product Memory or the Command Center.
-6. Inspect the evidence, edit the draft, then approve or skip the move.
-7. Execute approved work manually and record the observed outcome in Campaigns.
-8. Generate the next plan with the accumulated decision and outcome memory.
+4. Capture real audience context in **Signal Inbox** when you have a public discussion or bounded observation worth reviewing.
+5. Review new observations in **Signal Inbox**. Only accepted signals become available to planning.
+6. Select **Generate plan** from Product Memory or the Command Center.
+7. Inspect the evidence and use **Write channel draft** when you want the native writer to turn the opportunity into channel-native copy.
+8. Edit the draft, then approve or skip the move.
+9. Execute approved work manually and record the observed outcome in Campaigns.
+10. Generate the next plan with the accumulated decision and outcome memory.
 
 > **Note:** Refreshing the workspace reloads local dashboard state. It does not silently re-fetch URLs, repositories, or external audience sources.
 
@@ -95,6 +99,8 @@ The native agent cannot jump directly from a product summary to a confident reco
 Tool results are fed into subsequent model steps. The final plan is schema-validated, and every move needs at least one citation matching an exact product-evidence label. Audience observations may strengthen a move, but one observation is never promoted into a trend or proof of demand.
 
 External runtimes receive bounded JSON evidence in a disposable temporary workspace. Their final output passes through the same schema and citation checks before it can enter the review queue.
+
+Post writing is a separate governed loop. The native contribution writer must read the selected opportunity and its supporting evidence before returning one complete channel draft. It updates only the editable draft; approval and public execution remain separate human decisions.
 
 See [Harness architecture](docs/ARCHITECTURE.md) for the detailed lifecycle.
 

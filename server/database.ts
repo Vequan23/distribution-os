@@ -24,12 +24,36 @@ import {
   type OpportunityStatus,
   type PlanApplication,
   type Product,
+  type SignalCandidate,
+  type SignalKind,
 } from "./domain.ts";
 
 type Row = Record<string, string | number | null>;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function inferSignalKind(text: string): SignalKind {
+  const value = text.toLowerCase();
+  if (text.includes("?")) return "question";
+  if (/\b(problem|pain|hard|difficult|frustrat|struggl|broken|issue|cannot|can't)\b/.test(value)) return "pain";
+  if (/\b(need|wish|want|request|looking for|would like)\b/.test(value)) return "request";
+  if (/\b(mention|recommend|using|tried|saw)\b/.test(value)) return "mention";
+  return "unknown";
+}
+
+function signalRelevance(product: Product, source: IngestedSource, kind: SignalKind): number {
+  const ignored = new Set(["about", "after", "again", "also", "been", "being", "from", "have", "into", "more", "that", "their", "there", "these", "they", "this", "with", "would"]);
+  const terms = (value: string) => new Set(
+    value.toLowerCase().match(/[a-z0-9]{4,}/g)?.filter((word) => !ignored.has(word)) || [],
+  );
+  const productTerms = terms([product.name, product.description, product.audience, product.objective, product.positioning].join(" "));
+  const signalTerms = terms(`${source.label} ${source.summary} ${source.excerpt}`);
+  const overlap = [...signalTerms].filter((term) => productTerms.has(term)).length;
+  const sourceTrust = source.type === "url" ? 8 : 3;
+  const actionable = kind === "question" || kind === "pain" || kind === "request" ? 10 : 2;
+  return Math.max(25, Math.min(95, 30 + overlap * 7 + sourceTrust + actionable));
 }
 
 export class DistributionDatabase {
@@ -127,6 +151,24 @@ export class DistributionDatabase {
         payload_json TEXT NOT NULL DEFAULT '{}'
       );
 
+      CREATE TABLE IF NOT EXISTS signal_candidates (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL DEFAULT 'unknown',
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        excerpt TEXT NOT NULL,
+        source_url TEXT NOT NULL DEFAULT '',
+        source_type TEXT NOT NULL CHECK(source_type IN ('text', 'url')),
+        confidence INTEGER NOT NULL DEFAULT 0,
+        relevance INTEGER NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('new', 'accepted', 'dismissed')),
+        evidence_id TEXT REFERENCES evidence(id) ON DELETE SET NULL,
+        captured_at TEXT NOT NULL,
+        decided_at TEXT NOT NULL DEFAULT ''
+      );
+
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_type TEXT NOT NULL,
@@ -172,6 +214,8 @@ export class DistributionDatabase {
         ON harness_runs(created_at DESC);
       CREATE INDEX IF NOT EXISTS harness_steps_run_idx
         ON harness_steps(run_id, sequence);
+      CREATE INDEX IF NOT EXISTS signal_candidates_status_idx
+        ON signal_candidates(status, captured_at DESC);
     `);
 
     this.addColumn("products", "audience", "TEXT NOT NULL DEFAULT ''");
@@ -373,6 +417,104 @@ export class DistributionDatabase {
       this.recordEvent("audience.signal.added", "product", productId, `${sources.length} audience signal${sources.length === 1 ? "" : "s"} added to ${context.product.name}.`, { labels: sources.map((source) => source.label) });
       this.database.exec("COMMIT");
       return sources.length;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  addSignalCandidates(productId: string, sources: IngestedSource[]): { insertedCount: number; signalIds: string[] } {
+    const context = this.getProductContext(productId);
+    if (!sources.length) throw new Error("Add at least one signal candidate.");
+    const capturedAt = now();
+    const insert = this.database.prepare(`
+      INSERT INTO signal_candidates (
+        id, product_id, kind, title, summary, excerpt, source_url, source_type,
+        confidence, relevance, reason, status, captured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+    `);
+    const duplicate = this.database.prepare(`
+      SELECT id FROM signal_candidates
+      WHERE product_id = ? AND lower(title) = lower(?) AND source_url = ? AND lower(summary) = lower(?)
+      LIMIT 1
+    `);
+    const signalIds: string[] = [];
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const source of sources.slice(0, 12)) {
+        if (source.type !== "text" && source.type !== "url") continue;
+        const existing = duplicate.get(productId, source.label, source.sourceUrl, source.summary) as Row | undefined;
+        if (existing) continue;
+        const id = randomUUID();
+        const content = `${source.summary}\n${source.excerpt}`;
+        const kind = inferSignalKind(content);
+        const relevance = signalRelevance(context.product, source, kind);
+        const reason = source.type === "url"
+          ? "Captured from a public URL. Review the excerpt before promoting it into audience evidence."
+          : "Founder-supplied observation. Accept only if the context is specific enough to influence a distribution decision.";
+        insert.run(
+          id, productId, kind, source.label, source.summary, source.excerpt, source.sourceUrl,
+          source.type, source.confidence, relevance, reason, capturedAt,
+        );
+        signalIds.push(id);
+      }
+      this.recordEvent(
+        "signal.candidates.captured",
+        "product",
+        productId,
+        `${signalIds.length} signal candidate${signalIds.length === 1 ? "" : "s"} captured for ${context.product.name}.`,
+        { signalIds },
+      );
+      this.database.exec("COMMIT");
+      return { insertedCount: signalIds.length, signalIds };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  decideSignalCandidate(id: string, action: "accept" | "dismiss" | "restore"): void {
+    const row = this.database.prepare(`
+      SELECT s.*, p.name AS product_name
+      FROM signal_candidates s JOIN products p ON p.id = s.product_id
+      WHERE s.id = ? AND p.is_demo = 0
+    `).get(id) as Row | undefined;
+    if (!row) throw new Error("Signal candidate not found");
+    if (action !== "accept" && row.evidence_id) throw new Error("Accepted evidence cannot be moved back into the review inbox.");
+
+    const decidedAt = now();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      if (action === "accept") {
+        let evidenceId = String(row.evidence_id || "");
+        if (!evidenceId) {
+          evidenceId = randomUUID();
+          this.database.prepare(`
+            INSERT INTO evidence (
+              id, product_id, kind, title, summary, source_url, occurred_at,
+              source_type, classification, confidence, payload_json
+            ) VALUES (?, ?, 'audience-signal', ?, ?, ?, ?, ?, 'audience-signal', ?, ?)
+          `).run(
+            evidenceId, row.product_id, row.title, row.summary, row.source_url, decidedAt,
+            row.source_type, row.confidence,
+            JSON.stringify({ excerpt: row.excerpt, signalCandidateId: id }),
+          );
+        }
+        this.database.prepare("UPDATE signal_candidates SET status = 'accepted', evidence_id = ?, decided_at = ? WHERE id = ?")
+          .run(evidenceId, decidedAt, id);
+      } else {
+        const status = action === "restore" ? "new" : "dismissed";
+        this.database.prepare("UPDATE signal_candidates SET status = ?, decided_at = ? WHERE id = ?")
+          .run(status, action === "restore" ? "" : decidedAt, id);
+      }
+      this.recordEvent(
+        `signal.${action}`,
+        "signal",
+        id,
+        `${String(row.title)} ${action === "accept" ? "accepted as audience evidence" : action === "dismiss" ? "dismissed" : "returned to the inbox"}.`,
+        { productId: row.product_id, previousStatus: row.status },
+      );
+      this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
@@ -586,6 +728,7 @@ export class DistributionDatabase {
         (SELECT COUNT(*) FROM opportunities o JOIN products p ON p.id = o.product_id WHERE o.status = 'ready' AND p.is_demo = 0) AS ready_moves,
         (SELECT COUNT(*) FROM opportunities o JOIN products p ON p.id = o.product_id WHERE o.status = 'approved' AND p.is_demo = 0) AS approved_moves,
         (SELECT COUNT(*) FROM evidence e JOIN products p ON p.id = e.product_id WHERE p.is_demo = 0) AS evidence_items,
+        (SELECT COUNT(*) FROM signal_candidates s JOIN products p ON p.id = s.product_id WHERE s.status = 'new' AND p.is_demo = 0) AS new_signals,
         (SELECT COALESCE(ROUND(AVG(confidence)), 0) FROM products WHERE is_demo = 0) AS analysis_confidence,
         (SELECT COUNT(*) FROM channels WHERE connected = 1) AS connected_channels
     `).get() as Row;
@@ -617,6 +760,20 @@ export class DistributionDatabase {
       productId: String(row.product_id), productName: String(row.product_name),
     }));
 
+    const signalInbox = (this.database.prepare(`
+      SELECT s.*, p.name AS product_name
+      FROM signal_candidates s JOIN products p ON p.id = s.product_id
+      WHERE p.is_demo = 0
+      ORDER BY CASE s.status WHEN 'new' THEN 0 WHEN 'accepted' THEN 1 ELSE 2 END,
+               s.captured_at DESC
+    `).all() as Row[]).map((row): SignalCandidate => ({
+      id: String(row.id), productId: String(row.product_id), productName: String(row.product_name),
+      kind: String(row.kind) as SignalCandidate["kind"], title: String(row.title), summary: String(row.summary),
+      excerpt: String(row.excerpt), sourceUrl: String(row.source_url), sourceType: String(row.source_type) as SignalCandidate["sourceType"],
+      confidence: Number(row.confidence), relevance: Number(row.relevance), reason: String(row.reason),
+      status: String(row.status) as SignalCandidate["status"], capturedAt: String(row.captured_at), decidedAt: String(row.decided_at),
+    }));
+
     return {
       generatedAt: now(),
       storage: { mode: "local", location: this.databasePath },
@@ -624,6 +781,7 @@ export class DistributionDatabase {
         readyMoves: Number(metricRow.ready_moves),
         approvedMoves: Number(metricRow.approved_moves),
         evidenceItems: Number(metricRow.evidence_items),
+        newSignals: Number(metricRow.new_signals),
         connectedChannels: Number(metricRow.connected_channels),
         analysisConfidence: Number(metricRow.analysis_confidence),
       },
@@ -634,10 +792,30 @@ export class DistributionDatabase {
       products,
       channels,
       opportunities,
+      signalInbox,
       audienceSignals,
       recentEvents,
       harnessRuns: this.getRecentHarnessRuns(),
     };
+  }
+
+  getOpportunityDraftContext(id: string): { opportunity: Opportunity; product: Product; channel: Channel; evidence: Evidence[] } {
+    const dashboard = this.getDashboard();
+    const opportunity = dashboard.opportunities.find((item) => item.id === id);
+    if (!opportunity) throw new Error("Opportunity not found");
+    const product = dashboard.products.find((item) => item.id === opportunity.productId);
+    const channel = dashboard.channels.find((item) => item.id === opportunity.channelId);
+    if (!product || !channel) throw new Error("Opportunity context is incomplete");
+    return { opportunity, product, channel, evidence: opportunity.evidence };
+  }
+
+  updateOpportunityDraft(id: string, draftCopy: string): void {
+    const value = draftCopy.trim();
+    if (value.length < 20 || value.length > 4_000) throw new Error("Contribution draft must contain between 20 and 4,000 characters.");
+    const row = this.database.prepare("SELECT title FROM opportunities WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new Error("Opportunity not found");
+    this.database.prepare("UPDATE opportunities SET draft_copy = ? WHERE id = ?").run(value, id);
+    this.recordEvent("opportunity.draft.written", "opportunity", id, `A source-cited contribution draft was written for ${String(row.title)}.`);
   }
 
   decideOpportunity(id: string, action: "approve" | "skip" | "restore", draftCopy?: string): OpportunityStatus {

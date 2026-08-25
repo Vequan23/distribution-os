@@ -1,4 +1,4 @@
-import type { AIControlPlane, ChannelMode, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft } from "../server/domain.ts";
+import type { AIControlPlane, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft } from "../server/domain.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -84,6 +84,27 @@ export function addProductAudienceSignals(productId: string, sources: Onboarding
   return request<{ count: number; dashboard: DashboardState }>(`/api/products/${encodeURIComponent(productId)}/signals`, {
     method: "POST",
     body: JSON.stringify({ sources }),
+  });
+}
+
+export function captureProductSignals(productId: string, sources: OnboardingSourceInput[]): Promise<{ insertedCount: number; signalIds: string[]; dashboard: DashboardState }> {
+  return request<{ insertedCount: number; signalIds: string[]; dashboard: DashboardState }>(`/api/products/${encodeURIComponent(productId)}/signals/inbox`, {
+    method: "POST",
+    body: JSON.stringify({ sources }),
+  });
+}
+
+export function decideSignal(id: string, action: "accept" | "dismiss" | "restore"): Promise<DashboardState> {
+  return request<DashboardState>(`/api/signals/${encodeURIComponent(id)}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+}
+
+export function writeOpportunityDraft(id: string): Promise<{ result: ContributionDraftResult; dashboard: DashboardState }> {
+  return request<{ result: ContributionDraftResult; dashboard: DashboardState }>(`/api/opportunities/${encodeURIComponent(id)}/draft`, {
+    method: "POST",
+    body: "{}",
   });
 }
 
