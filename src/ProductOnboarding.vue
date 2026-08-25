@@ -229,13 +229,13 @@ function sourcesFor(field: ProductBriefField): string {
       <div class="panel-heading"><div><p class="eyebrow">01 · PRODUCT EVIDENCE</p><h2>What can explain the product?</h2></div><osx-badge tone="info">{{ sources.length }} added</osx-badge></div>
       <div class="source-type-grid">
         <button v-for="option in sourceOptions" :key="option.type" :class="{ active: sourceType === option.type }" @click="sourceType = option.type; localError = ''">
-          <osx-icon :name="option.icon" size="21"></osx-icon><span><strong>{{ option.label }}</strong><small>{{ option.detail }}</small></span>
+          <osx-icon :name="option.icon" :size="21"></osx-icon><span><strong>{{ option.label }}</strong><small>{{ option.detail }}</small></span>
         </button>
       </div>
 
       <div v-if="sourceType === 'repository'" class="repository-picker">
         <label class="file-drop repository-drop">
-          <osx-icon name="folder" size="30"></osx-icon>
+          <osx-icon name="folder" :size="30"></osx-icon>
           <strong>{{ fileBusy ? "Reading repository evidence…" : "Choose repository folder" }}</strong>
           <span>Only bounded documentation and project manifests are read. Dependencies, builds, Git history, binaries, and secrets are ignored.</span>
           <input type="file" multiple webkitdirectory="" :disabled="fileBusy" @change="addRepositoryFolder" />
@@ -252,7 +252,7 @@ function sourcesFor(field: ProductBriefField): string {
 
       <div v-else-if="sourceType === 'document'" class="repository-picker">
         <label class="file-drop">
-          <osx-icon name="upload" size="28"></osx-icon>
+          <osx-icon name="upload" :size="28"></osx-icon>
           <strong>{{ fileBusy ? "Reading documents…" : "Choose product documents" }}</strong>
           <span>PDF, DOCX, Markdown, text, JSON, YAML, or HTML · 8 MB each</span>
           <input type="file" multiple accept=".pdf,.docx,.md,.mdx,.txt,.json,.yaml,.yml,.html,text/*,application/pdf" :disabled="fileBusy" @change="addFiles" />
@@ -270,7 +270,7 @@ function sourcesFor(field: ProductBriefField): string {
 
       <div v-if="sources.length" class="source-inventory">
         <article v-for="(source, index) in sources" :key="`${source.type}-${index}`">
-          <osx-icon :name="sourceOptions.find((option) => option.type === source.type)?.icon || 'file-text'" size="18"></osx-icon>
+          <osx-icon :name="sourceOptions.find((option) => option.type === source.type)?.icon || 'file-text'" :size="18"></osx-icon>
           <span><strong>{{ source.label }}</strong><small>{{ source.type }} · {{ source.filename || source.value?.slice(0, 90) || "local source bundle" }}</small></span>
           <osx-button size="small" icon="x" aria-label="Remove source" @click="removeSource(index)"></osx-button>
         </article>
@@ -295,14 +295,14 @@ function sourcesFor(field: ProductBriefField): string {
     <section v-else-if="brief" class="onboarding-panel review-panel">
       <div class="panel-heading"><div><p class="eyebrow">03 · GOAL & APPROVAL</p><h2>What must distribution accomplish next?</h2></div><osx-badge tone="warning">Founder decision</osx-badge></div>
       <div class="objective-grid">
-        <button v-for="objective in brief.suggestedObjectives" :key="objective" :class="{ active: !customObjective && form.objective === objective }" @click="chooseObjective(objective)"><osx-icon name="target" size="20"></osx-icon><span>{{ objective }}</span><osx-icon v-if="!customObjective && form.objective === objective" name="check" size="17"></osx-icon></button>
-        <button :class="{ active: customObjective }" @click="chooseCustomObjective"><osx-icon name="edit" size="20"></osx-icon><span>Write a different objective</span><osx-icon v-if="customObjective" name="check" size="17"></osx-icon></button>
+        <button v-for="objective in brief.suggestedObjectives" :key="objective" :class="{ active: !customObjective && form.objective === objective }" @click="chooseObjective(objective)"><osx-icon name="target" :size="20"></osx-icon><span>{{ objective }}</span><osx-icon v-if="!customObjective && form.objective === objective" name="check" :size="17"></osx-icon></button>
+        <button :class="{ active: customObjective }" @click="chooseCustomObjective"><osx-icon name="edit" :size="20"></osx-icon><span>Write a different objective</span><osx-icon v-if="customObjective" name="check" :size="17"></osx-icon></button>
       </div>
       <label v-if="customObjective" class="custom-objective"><span>Custom objective</span><input v-model="form.objective" autofocus placeholder="A measurable outcome for the next distribution cycle" /></label>
       <div class="truth-grid">
-        <article><osx-icon name="edit" size="22"></osx-icon><div><strong>Intent</strong><p>Documents and pasted context establish what you mean to build—not what has shipped.</p></div></article>
-        <article><osx-icon name="globe" size="22"></osx-icon><div><strong>Public claim</strong><p>Web pages establish what customers are being promised—not whether the behavior works.</p></div></article>
-        <article><osx-icon name="code" size="22"></osx-icon><div><strong>Implementation</strong><p>Repositories can support capability claims, but cannot prove demand or customer value.</p></div></article>
+        <article><osx-icon name="edit" :size="22"></osx-icon><div><strong>Intent</strong><p>Documents and pasted context establish what you mean to build—not what has shipped.</p></div></article>
+        <article><osx-icon name="globe" :size="22"></osx-icon><div><strong>Public claim</strong><p>Web pages establish what customers are being promised—not whether the behavior works.</p></div></article>
+        <article><osx-icon name="code" :size="22"></osx-icon><div><strong>Implementation</strong><p>Repositories can support capability claims, but cannot prove demand or customer value.</p></div></article>
       </div>
       <dl class="brief-review"><div><dt>Product</dt><dd>{{ form.name }} · {{ form.stage }}</dd></div><div><dt>Audience</dt><dd>{{ form.audience }}</dd></div><div><dt>Objective</dt><dd>{{ form.objective }}</dd></div><div><dt>Sources</dt><dd>{{ brief.sourceCount }} source{{ brief.sourceCount === 1 ? "" : "s" }} · {{ brief.overallConfidence }}% initial confidence</dd></div></dl>
       <osx-alert tone="info" title="What happens next">Distribution-OS creates one founder-reviewable narrative grounded only in these sources. It does not publish or connect a channel.</osx-alert>

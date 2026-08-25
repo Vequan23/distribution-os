@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { activateAgentRuntime, activateModelProfile, decideOpportunity, discoverAIRuntimes, loadAIControlPlane, loadDashboard, onboardProduct, refreshSignals, saveModelProfile } from "./api.ts";
 import type { AIControlPlane, DashboardState, ModelProviderId, OnboardProductInput, Opportunity } from "../server/domain.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
@@ -17,6 +17,10 @@ const error = ref("");
 const ai = ref<AIControlPlane | null>(null);
 const aiBusy = ref(false);
 const aiError = ref("");
+const profileNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
+const profileErrors = reactive({ model: "", baseUrl: "" });
+const modelInput = ref<HTMLInputElement | null>(null);
+const baseUrlInput = ref<HTMLInputElement | null>(null);
 const runtimeModel = ref("");
 const profileForm = reactive({ name: "", provider: "anthropic" as ModelProviderId, model: "", baseUrl: "https://api.anthropic.com/v1", apiKey: "" });
 
@@ -61,17 +65,33 @@ function selectProvider(providerId: ModelProviderId): void {
   profileForm.name = "";
   profileForm.model = "";
   profileForm.apiKey = "";
+  profileErrors.model = "";
+  profileErrors.baseUrl = "";
+  profileNotice.value = null;
 }
 
 async function saveProfile(): Promise<void> {
+  profileNotice.value = null;
+  profileErrors.model = profileForm.model.trim() ? "" : "Enter the provider's model identifier.";
+  profileErrors.baseUrl = profileForm.baseUrl.trim() ? "" : "Enter the provider base URL.";
+  if (profileErrors.model || profileErrors.baseUrl) {
+    profileNotice.value = { tone: "danger", title: "Complete the highlighted fields", detail: profileErrors.model || profileErrors.baseUrl };
+    await nextTick();
+    (profileErrors.model ? modelInput.value : baseUrlInput.value)?.focus();
+    return;
+  }
   aiBusy.value = true;
   aiError.value = "";
   try {
     ai.value = await saveModelProfile({ ...profileForm, activate: true });
+    const saved = ai.value.profiles.find((profile) => profile.provider === profileForm.provider && profile.model === profileForm.model.trim());
     profileForm.apiKey = "";
     profileForm.name = "";
+    profileNotice.value = saved?.readiness === "ready"
+      ? { tone: "success", title: "Model profile saved", detail: `${saved.name} is selected for the native Distribution-OS harness.` }
+      : { tone: "warning", title: "Profile saved—credential required", detail: `The profile is selected, but ${saved?.provider ?? profileForm.provider} still needs a Keychain credential or environment variable before AI jobs can run.` };
   } catch (cause) {
-    aiError.value = cause instanceof Error ? cause.message : "The model profile could not be saved.";
+    profileNotice.value = { tone: "danger", title: "Model profile was not saved", detail: cause instanceof Error ? cause.message : "The model profile could not be saved." };
   } finally {
     aiBusy.value = false;
   }
@@ -195,7 +215,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       <div slot="toolbar" class="toolbar-actions">
         <osx-badge tone="success" size="small" dot>LOCAL-FIRST</osx-badge>
         <button v-if="ai" class="engine-chip" title="Open AI Harness" @click="view = 'harness'">
-          <osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" size="14"></osx-icon>
+          <osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" :size="14"></osx-icon>
           {{ activeRuntime?.name ?? "AI setup" }}<span v-if="activeModelProfile && ai.execution.runtimeId === 'native'">· {{ activeModelProfile.model }}</span>
         </button>
         <span v-if="state" class="toolbar-summary">{{ state.metrics.readyMoves }} moves · {{ state.metrics.evidenceItems }} evidence items</span>
@@ -211,14 +231,14 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <template v-for="item in navItems" :key="item.id">
           <p v-if="item.section" class="nav-section">{{ item.section }}</p>
           <button :class="['nav-item', { active: view === item.id }]" :aria-current="view === item.id ? 'page' : undefined" @click="view = item.id">
-            <osx-icon :name="item.icon" size="18"></osx-icon>
+            <osx-icon :name="item.icon" :size="18"></osx-icon>
             <span>{{ item.label }}</span>
             <b v-if="item.id === 'command' && state">{{ state.metrics.readyMoves }}</b>
             <b v-else-if="item.id === 'campaigns' && approved.length">{{ approved.length }}</b>
           </button>
         </template>
         <section class="privacy-card">
-          <osx-icon name="lock" size="18"></osx-icon>
+          <osx-icon name="lock" :size="18"></osx-icon>
           <div><strong>Private by default</strong><span>Product memory and drafts remain on this machine.</span></div>
         </section>
       </nav>
@@ -271,9 +291,9 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
                 </div>
                 <h3>{{ opportunity.title }}</h3>
                 <p>{{ opportunity.context }}</p>
-                <div class="evidence-line"><osx-icon name="check" size="15"></osx-icon>{{ opportunity.evidence.length }} supporting evidence items</div>
+                <div class="evidence-line"><osx-icon name="check" :size="15"></osx-icon>{{ opportunity.evidence.length }} supporting evidence items</div>
               </div>
-              <div class="opportunity-score"><strong>{{ opportunity.score }}</strong><span>FIT</span><osx-icon name="chevron-right" size="18"></osx-icon></div>
+              <div class="opportunity-score"><strong>{{ opportunity.score }}</strong><span>FIT</span><osx-icon name="chevron-right" :size="18"></osx-icon></div>
             </button>
             <osx-empty-state v-if="!readyOpportunities.length && !state.products.length" icon="boxes" title="No product memory yet">
               Add a product from a repository, URL, document, or pasted context before Distribution-OS recommends a move.
@@ -297,14 +317,14 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             Start with whatever explains the product today. Code is useful, but it is not required.
             <osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Add the first product</osx-button>
           </osx-empty-state>
-          <button v-else class="add-product-card" @click="view = 'onboarding'"><osx-icon name="plus" size="24"></osx-icon><strong>Add another product</strong><span>Repository, URL, document, or pasted context</span></button>
+          <button v-else class="add-product-card" @click="view = 'onboarding'"><osx-icon name="plus" :size="24"></osx-icon><strong>Add another product</strong><span>Repository, URL, document, or pasted context</span></button>
         </div>
       </main>
 
       <main v-else-if="state && view === 'audience'" class="workspace-page">
         <header><p class="eyebrow">AUDIENCE MAP</p><h1>Problems, people, and places.</h1><p>The system optimizes for relevance—not reach without context.</p></header>
         <div v-if="state.products.length" class="audience-grid">
-          <article v-for="product in state.products" :key="product.id"><osx-icon name="user" size="24"></osx-icon><h2>{{ product.audience }}</h2><p>{{ product.name }} is currently optimizing for: {{ product.objective }}</p><div><osx-badge>{{ product.stage }}</osx-badge><osx-badge tone="info">{{ product.confidence }}% evidence</osx-badge></div></article>
+          <article v-for="product in state.products" :key="product.id"><osx-icon name="user" :size="24"></osx-icon><h2>{{ product.audience }}</h2><p>{{ product.name }} is currently optimizing for: {{ product.objective }}</p><div><osx-badge>{{ product.stage }}</osx-badge><osx-badge tone="info">{{ product.confidence }}% evidence</osx-badge></div></article>
         </div>
         <osx-empty-state v-else class="page-empty-state" icon="user" title="No audience has been established">Audience hypotheses appear only after a product has been onboarded and reviewed.<osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button></osx-empty-state>
       </main>
@@ -348,14 +368,14 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <section v-if="!ai" class="loading-state" aria-live="polite"><osx-spinner label="Inspecting local AI runtimes"></osx-spinner><strong>Inspecting local providers and agent runtimes…</strong></section>
 
         <section v-if="ai" class="execution-summary">
-          <div class="execution-mark"><osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" size="24"></osx-icon></div>
+          <div class="execution-mark"><osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" :size="24"></osx-icon></div>
           <div><span>ACTIVE EXECUTION PROFILE</span><strong>{{ activeRuntime?.name }}</strong><small v-if="ai.execution.runtimeId === 'native'">{{ activeModelProfile ? `${activeModelProfile.name} · ${activeModelProfile.model}` : "Add a model profile to enable AI-backed analysis." }}</small><small v-else>{{ ai.execution.runtimeModel || "The runtime's default model" }} · authentication managed by {{ activeRuntime?.name }}</small></div>
           <osx-badge :tone="activeRuntime?.available && (ai.execution.runtimeId !== 'native' || activeModelProfile?.readiness === 'ready') ? 'success' : 'warning'" dot>{{ activeRuntime?.available && (ai.execution.runtimeId !== 'native' || activeModelProfile?.readiness === 'ready') ? "Ready" : "Setup required" }}</osx-badge>
         </section>
 
         <section class="ownership-grid" aria-label="AI execution ownership">
-          <article><osx-icon name="sparkle" size="22"></osx-icon><div><h2>Model APIs</h2><p>Distribution-OS owns planning, bounded tools, product memory, approvals, retries, and outcome learning. The provider supplies inference only.</p></div></article>
-          <article><osx-icon name="terminal" size="22"></osx-icon><div><h2>Agent runtimes</h2><p>Claude Code, Cursor, OpenCode, or Codex own their internal agent loop. Distribution-OS supplies the task, evidence, policy, and records the result.</p></div></article>
+          <article><osx-icon name="sparkle" :size="22"></osx-icon><div><h2>Model APIs</h2><p>Distribution-OS owns planning, bounded tools, product memory, approvals, retries, and outcome learning. The provider supplies inference only.</p></div></article>
+          <article><osx-icon name="terminal" :size="22"></osx-icon><div><h2>Agent runtimes</h2><p>Claude Code, Cursor, OpenCode, or Codex own their internal agent loop. Distribution-OS supplies the task, evidence, policy, and records the result.</p></div></article>
         </section>
 
         <section v-if="ai" class="harness-section">
@@ -365,9 +385,9 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           </div>
           <div class="runtime-grid">
             <article v-for="runtime in ai.runtimes" :key="runtime.id" :class="['runtime-card', { selected: ai.execution.runtimeId === runtime.id, unavailable: !runtime.available }]">
-              <header><span class="runtime-icon"><osx-icon :name="runtime.id === 'native' ? 'sparkle' : 'terminal'" size="20"></osx-icon></span><div><h3>{{ runtime.name }}</h3><small>{{ runtime.version || (runtime.id === 'native' ? 'Built in' : runtime.command) }}</small></div><osx-badge :tone="runtime.availability === 'available' ? 'success' : runtime.availability === 'setup-required' ? 'warning' : 'neutral'" size="small" dot>{{ runtime.availability.replace('-', ' ') }}</osx-badge></header>
+              <header><span class="runtime-icon"><osx-icon :name="runtime.id === 'native' ? 'sparkle' : 'terminal'" :size="20"></osx-icon></span><div><h3>{{ runtime.name }}</h3><small>{{ runtime.version || (runtime.id === 'native' ? 'Built in' : runtime.command) }}</small></div><osx-badge :tone="runtime.availability === 'available' ? 'success' : runtime.availability === 'setup-required' ? 'warning' : 'neutral'" size="small" dot>{{ runtime.availability.replace('-', ' ') }}</osx-badge></header>
               <p>{{ runtime.detail }}</p>
-              <ul><li v-for="capability in runtime.capabilities" :key="capability"><osx-icon name="check" size="13"></osx-icon>{{ capability }}</li></ul>
+              <ul><li v-for="capability in runtime.capabilities" :key="capability"><osx-icon name="check" :size="13"></osx-icon>{{ capability }}</li></ul>
               <label v-if="runtime.id !== 'native' && runtime.ownsModelSelection && ai.execution.runtimeId === runtime.id">Runtime model override <input v-model="runtimeModel" placeholder="Optional — use runtime default" /></label>
               <footer><span>{{ runtime.ownsModelSelection ? "Runtime owns model selection" : "Uses the active model profile" }}</span><osx-button size="small" :variant="ai.execution.runtimeId === runtime.id ? 'secondary' : 'primary'" :disabled="!runtime.available || aiBusy || ai.execution.runtimeId === runtime.id" @click="chooseRuntime(runtime.id)">{{ ai.execution.runtimeId === runtime.id ? "Active" : "Use runtime" }}</osx-button></footer>
             </article>
@@ -383,18 +403,19 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <div class="provider-layout">
             <div class="provider-list" role="list" aria-label="Model providers">
               <button v-for="provider in ai.providers" :key="provider.id" :class="{ active: profileForm.provider === provider.id }" @click="selectProvider(provider.id)">
-                <span><strong>{{ provider.name }}</strong><small>{{ provider.category }}</small></span><osx-icon name="chevron-right" size="16"></osx-icon>
+                <span><strong>{{ provider.name }}</strong><small>{{ provider.category }}</small></span><osx-icon name="chevron-right" :size="16"></osx-icon>
               </button>
             </div>
-            <form class="provider-form" @submit.prevent="saveProfile">
+            <form class="provider-form" novalidate @submit.prevent="saveProfile" @keydown.enter.prevent="saveProfile">
               <div class="provider-form-heading"><div><h3>{{ selectedProvider?.name }}</h3><p>{{ selectedProvider?.description }}</p></div><osx-badge>{{ selectedProvider?.category }}</osx-badge></div>
               <div class="provider-form-grid">
                 <label>Profile name <input v-model="profileForm.name" placeholder="Optional label" /></label>
-                <label>Model ID <input v-model="profileForm.model" required placeholder="Provider model identifier" /></label>
-                <label class="wide">Base URL <input v-model="profileForm.baseUrl" required inputmode="url" /></label>
+                <label :class="{ invalid: profileErrors.model }">Model ID <input ref="modelInput" v-model="profileForm.model" :aria-invalid="Boolean(profileErrors.model)" aria-describedby="model-id-feedback" placeholder="Provider model identifier" @input="profileErrors.model = ''; profileNotice = null" /><small id="model-id-feedback" :class="{ 'field-error': profileErrors.model }">{{ profileErrors.model || "Use the exact model ID exposed by the provider." }}</small></label>
+                <label class="wide" :class="{ invalid: profileErrors.baseUrl }">Base URL <input ref="baseUrlInput" v-model="profileForm.baseUrl" :aria-invalid="Boolean(profileErrors.baseUrl)" :aria-describedby="profileErrors.baseUrl ? 'base-url-feedback' : undefined" inputmode="url" @input="profileErrors.baseUrl = ''; profileNotice = null" /><small v-if="profileErrors.baseUrl" id="base-url-feedback" class="field-error">{{ profileErrors.baseUrl }}</small></label>
                 <label v-if="profileForm.provider !== 'ollama'" class="wide">API key <input v-model="profileForm.apiKey" type="password" autocomplete="off" :placeholder="selectedProvider?.environmentVariables.length ? `Optional if ${selectedProvider.environmentVariables.join(' or ')} is set` : 'Stored securely'" /><small>Leave blank to use an environment variable. A supplied key is saved only to {{ ai.secureStorage }}.</small></label>
               </div>
-              <footer><span>Saving activates this profile and switches execution to Distribution-OS Native.</span><osx-button type="submit" variant="primary" icon="plus" :loading="aiBusy">Save & use profile</osx-button></footer>
+              <osx-alert v-if="profileNotice" class="profile-notice" :tone="profileNotice.tone" :title="profileNotice.title">{{ profileNotice.detail }}</osx-alert>
+              <footer><span>Saving selects this profile and switches execution to Distribution-OS Native.</span><osx-button type="button" variant="primary" icon="plus" :loading="aiBusy" @click="saveProfile">Save profile</osx-button></footer>
             </form>
           </div>
 
@@ -413,9 +434,9 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       <main v-else-if="state && view === 'settings'" class="workspace-page">
         <header><p class="eyebrow">SYSTEM</p><h1>Local control plane.</h1><p>The database, product memory, voice model, and approval history stay under your control.</p></header>
         <section class="settings-grid">
-          <article><osx-icon name="lock" size="24"></osx-icon><div><h2>Private local ledger</h2><p>{{ state.storage.location }}</p></div><osx-badge tone="success">Active</osx-badge></article>
-          <article><osx-icon name="activity" size="24"></osx-icon><div><h2>Managed execution cloud</h2><p>Optional future layer for scheduled publishing, monitoring, and team access.</p></div><osx-badge>Not enabled</osx-badge></article>
-          <article><osx-icon name="user" size="24"></osx-icon><div><h2>Human approval kernel</h2><p>Public replies, new channels, and sensitive claims require explicit judgment.</p></div><osx-badge tone="info">Required</osx-badge></article>
+          <article><osx-icon name="lock" :size="24"></osx-icon><div><h2>Private local ledger</h2><p>{{ state.storage.location }}</p></div><osx-badge tone="success">Active</osx-badge></article>
+          <article><osx-icon name="activity" :size="24"></osx-icon><div><h2>Managed execution cloud</h2><p>Optional future layer for scheduled publishing, monitoring, and team access.</p></div><osx-badge>Not enabled</osx-badge></article>
+          <article><osx-icon name="user" :size="24"></osx-icon><div><h2>Human approval kernel</h2><p>Public replies, new channels, and sensitive claims require explicit judgment.</p></div><osx-badge tone="info">Required</osx-badge></article>
         </section>
       </main>
 
@@ -429,15 +450,15 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <section class="reason-card"><h3>Contribution angle</h3><p>{{ selected.suggestedAngle }}</p><small>{{ selected.audience }}</small></section>
           <section class="score-panel">
             <h3>Decision signals</h3>
-            <div><span>Relevance</span><osx-progress :value="selected.relevanceScore" max="100"></osx-progress><b>{{ selected.relevanceScore }}</b></div>
-            <div><span>Audience value</span><osx-progress :value="selected.valueScore" max="100"></osx-progress><b>{{ selected.valueScore }}</b></div>
-            <div><span>Freshness</span><osx-progress :value="selected.freshnessScore" max="100"></osx-progress><b>{{ selected.freshnessScore }}</b></div>
+            <div><span>Relevance</span><osx-progress :value="selected.relevanceScore" :max="100"></osx-progress><b>{{ selected.relevanceScore }}</b></div>
+            <div><span>Audience value</span><osx-progress :value="selected.valueScore" :max="100"></osx-progress><b>{{ selected.valueScore }}</b></div>
+            <div><span>Freshness</span><osx-progress :value="selected.freshnessScore" :max="100"></osx-progress><b>{{ selected.freshnessScore }}</b></div>
           </section>
           <section class="evidence-panel">
             <h3>What proves it</h3>
             <template v-for="item in selected.evidence" :key="item.id">
-              <a v-if="item.sourceUrl" :href="item.sourceUrl" target="_blank" rel="noreferrer"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-icon name="external" size="14"></osx-icon></a>
-              <div v-else class="evidence-static"><osx-icon name="file-text" size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-badge size="small">{{ item.classification }}</osx-badge></div>
+              <a v-if="item.sourceUrl" :href="item.sourceUrl" target="_blank" rel="noreferrer"><osx-icon name="file-text" :size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-icon name="external" :size="14"></osx-icon></a>
+              <div v-else class="evidence-static"><osx-icon name="file-text" :size="16"></osx-icon><span><strong>{{ item.title }}</strong><small>{{ item.summary }}</small></span><osx-badge size="small">{{ item.classification }}</osx-badge></div>
             </template>
           </section>
           <section class="draft-panel">

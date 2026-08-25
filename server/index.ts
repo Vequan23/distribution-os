@@ -78,7 +78,12 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/api/ai/profiles") {
       const body = await readJson(request);
-      json(response, 201, await aiControlPlane.saveModelProfile({
+      console.info("[ai-control-plane] saving model profile", {
+        provider: String(body.provider || ""),
+        model: String(body.model || "").slice(0, 120),
+        credentialSupplied: typeof body.apiKey === "string" && body.apiKey.trim().length > 0,
+      });
+      const result = await aiControlPlane.saveModelProfile({
         id: typeof body.id === "string" ? body.id : undefined,
         name: typeof body.name === "string" ? body.name : undefined,
         provider: typeof body.provider === "string" ? body.provider : undefined,
@@ -86,7 +91,9 @@ const server = createServer(async (request, response) => {
         baseUrl: typeof body.baseUrl === "string" ? body.baseUrl : undefined,
         apiKey: typeof body.apiKey === "string" ? body.apiKey : undefined,
         activate: body.activate === true,
-      }));
+      });
+      console.info("[ai-control-plane] model profile saved", { profileCount: result.profiles.length, activeProfileId: result.execution.modelProfileId });
+      json(response, 201, result);
       return;
     }
     const profileMatch = url.pathname.match(/^\/api\/ai\/profiles\/([^/]+)\/activate$/);
@@ -96,7 +103,9 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/api/ai/runtime") {
       const body = await readJson(request);
-      json(response, 200, await aiControlPlane.activateRuntime(String(body.runtimeId || ""), typeof body.model === "string" ? body.model : ""));
+      const result = await aiControlPlane.activateRuntime(String(body.runtimeId || ""), typeof body.model === "string" ? body.model : "");
+      console.info("[ai-control-plane] runtime activated", { runtimeId: result.execution.runtimeId, modelOverride: Boolean(result.execution.runtimeModel) });
+      json(response, 200, result);
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/refresh") {
@@ -148,6 +157,7 @@ const server = createServer(async (request, response) => {
     json(response, 404, { error: "Not found" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected server error";
+    console.error("[distribution-os] request failed", { method: request.method, path: request.url, message });
     json(response, message === "Opportunity not found" ? 404 : 500, { error: message });
   }
 });
