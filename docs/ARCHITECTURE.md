@@ -6,7 +6,7 @@ Distribution-OS treats distribution as a governed evidence-to-outcome loop, not 
 
 1. **Ingest** bounds source material and classifies it as intent, public claim, implementation, or outcome evidence.
 2. **Understand** performs deterministic extraction and, when configured, schema-valid source-cited AI synthesis.
-3. **Observe** captures founder-supplied public discussions or bounded audience excerpts in a quarantined Signal Inbox. Human acceptance promotes a candidate into a separate audience-evidence class. One observation is never promoted into a trend or proof of demand.
+3. **Observe** captures founder-supplied public discussions or imports recent GitHub issues through a read-only connector into a quarantined Signal Inbox. Pull requests and duplicate issues are excluded. Human acceptance promotes a candidate into a separate audience-evidence class. One observation is never promoted into a trend or proof of demand.
 4. **Plan** runs either the native AI SDK `ToolLoopAgent` or a selected external runtime against product memory, product evidence, audience observations, channel policy, and prior outcomes.
 5. **Verify** rejects moves without exact evidence-label citations and validates all output through Zod schemas.
 6. **Write** runs a separate native contribution loop that must read the selected opportunity and its supporting evidence before updating the editable channel draft.
@@ -34,3 +34,7 @@ Claude Code, OpenCode, Codex CLI, and Cursor Agent receive JSON evidence files i
 ## Durable ledger
 
 SQLite records the run, step names/statuses, selected runtime/model, concise diagnostics, decisions, and outcomes. It does not record secrets, raw prompts, private chain-of-thought, or complete runtime transcripts.
+
+## Connector boundary
+
+The first connector is deliberately narrow. GitHub repository metadata and recent issues are read from fixed `api.github.com` endpoints only. A sync never comments, edits, reacts, subscribes, or publishes. Connector metadata and safe rate-limit state are stored locally; `GITHUB_TOKEN`, when supplied, remains an environment credential. Imported issues enter the Signal Inbox and cannot influence a plan until the founder accepts them as bounded audience evidence.

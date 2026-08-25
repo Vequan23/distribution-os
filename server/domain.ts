@@ -16,6 +16,9 @@ export type HarnessRunStatus = "running" | "completed" | "failed" | "fallback";
 export type HarnessStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 export type SignalStatus = "new" | "accepted" | "dismissed";
 export type SignalKind = "question" | "pain" | "request" | "mention" | "unknown";
+export type SignalOrigin = "manual" | "github";
+export type ConnectorKind = "github";
+export type ConnectorStatus = "connected" | "error";
 
 export interface ProviderCatalogEntry {
   id: ModelProviderId;
@@ -128,6 +131,24 @@ export interface SignalCandidate {
   status: SignalStatus;
   capturedAt: string;
   decidedAt: string;
+  origin: SignalOrigin;
+  externalId: string;
+}
+
+export interface SourceConnector {
+  id: string;
+  productId: string;
+  productName: string;
+  kind: ConnectorKind;
+  name: string;
+  externalId: string;
+  sourceUrl: string;
+  status: ConnectorStatus;
+  lastSyncedAt: string;
+  lastError: string;
+  importedCount: number;
+  rateLimitRemaining: number | null;
+  createdAt: string;
 }
 
 export interface OnboardingSourceInput {
@@ -304,6 +325,7 @@ export interface DashboardState {
     evidenceItems: number;
     newSignals: number;
     connectedChannels: number;
+    connectedSources: number;
     analysisConfidence: number;
   };
   onboarding: {
@@ -314,6 +336,7 @@ export interface DashboardState {
   channels: Channel[];
   opportunities: Opportunity[];
   signalInbox: SignalCandidate[];
+  connectors: SourceConnector[];
   audienceSignals: AudienceSignal[];
   recentEvents: DistributionEvent[];
   harnessRuns: HarnessRun[];

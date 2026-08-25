@@ -26,6 +26,8 @@ import {
   type Product,
   type SignalCandidate,
   type SignalKind,
+  type SignalOrigin,
+  type SourceConnector,
 } from "./domain.ts";
 
 type Row = Record<string, string | number | null>;
@@ -169,6 +171,23 @@ export class DistributionDatabase {
         decided_at TEXT NOT NULL DEFAULT ''
       );
 
+      CREATE TABLE IF NOT EXISTS source_connectors (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('github')),
+        name TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('connected', 'error')),
+        last_synced_at TEXT NOT NULL DEFAULT '',
+        last_error TEXT NOT NULL DEFAULT '',
+        imported_count INTEGER NOT NULL DEFAULT 0,
+        rate_limit_remaining INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(product_id, kind, external_id)
+      );
+
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_type TEXT NOT NULL,
@@ -216,6 +235,8 @@ export class DistributionDatabase {
         ON harness_steps(run_id, sequence);
       CREATE INDEX IF NOT EXISTS signal_candidates_status_idx
         ON signal_candidates(status, captured_at DESC);
+      CREATE INDEX IF NOT EXISTS source_connectors_product_idx
+        ON source_connectors(product_id, updated_at DESC);
     `);
 
     this.addColumn("products", "audience", "TEXT NOT NULL DEFAULT ''");
@@ -227,6 +248,8 @@ export class DistributionDatabase {
     this.addColumn("evidence", "source_type", "TEXT NOT NULL DEFAULT 'text'");
     this.addColumn("evidence", "classification", "TEXT NOT NULL DEFAULT 'intent'");
     this.addColumn("evidence", "confidence", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("signal_candidates", "origin", "TEXT NOT NULL DEFAULT 'manual'");
+    this.addColumn("signal_candidates", "external_id", "TEXT NOT NULL DEFAULT ''");
   }
 
   private addColumn(table: string, column: string, definition: string): void {
@@ -423,15 +446,19 @@ export class DistributionDatabase {
     }
   }
 
-  addSignalCandidates(productId: string, sources: IngestedSource[]): { insertedCount: number; signalIds: string[] } {
+  addSignalCandidates(
+    productId: string,
+    sources: IngestedSource[],
+    metadata: { origin?: SignalOrigin; externalIds?: string[] } = {},
+  ): { insertedCount: number; signalIds: string[] } {
     const context = this.getProductContext(productId);
     if (!sources.length) throw new Error("Add at least one signal candidate.");
     const capturedAt = now();
     const insert = this.database.prepare(`
       INSERT INTO signal_candidates (
         id, product_id, kind, title, summary, excerpt, source_url, source_type,
-        confidence, relevance, reason, status, captured_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+        confidence, relevance, reason, status, captured_at, origin, external_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?)
     `);
     const duplicate = this.database.prepare(`
       SELECT id FROM signal_candidates
@@ -441,7 +468,7 @@ export class DistributionDatabase {
     const signalIds: string[] = [];
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      for (const source of sources.slice(0, 12)) {
+      for (const [index, source] of sources.slice(0, 12).entries()) {
         if (source.type !== "text" && source.type !== "url") continue;
         const existing = duplicate.get(productId, source.label, source.sourceUrl, source.summary) as Row | undefined;
         if (existing) continue;
@@ -449,12 +476,15 @@ export class DistributionDatabase {
         const content = `${source.summary}\n${source.excerpt}`;
         const kind = inferSignalKind(content);
         const relevance = signalRelevance(context.product, source, kind);
-        const reason = source.type === "url"
+        const origin = metadata.origin ?? "manual";
+        const reason = origin === "github"
+          ? "Imported read-only from a GitHub issue. Inspect the source before promoting this observation into audience evidence."
+          : source.type === "url"
           ? "Captured from a public URL. Review the excerpt before promoting it into audience evidence."
           : "Founder-supplied observation. Accept only if the context is specific enough to influence a distribution decision.";
         insert.run(
           id, productId, kind, source.label, source.summary, source.excerpt, source.sourceUrl,
-          source.type, source.confidence, relevance, reason, capturedAt,
+          source.type, source.confidence, relevance, reason, capturedAt, origin, metadata.externalIds?.[index] || "",
         );
         signalIds.push(id);
       }
@@ -471,6 +501,83 @@ export class DistributionDatabase {
       this.database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  upsertSourceConnector(input: {
+    productId: string;
+    kind: "github";
+    name: string;
+    externalId: string;
+    sourceUrl: string;
+  }): SourceConnector {
+    const product = this.getProductContext(input.productId).product;
+    const timestamp = now();
+    const existing = this.database.prepare(
+      "SELECT id, created_at FROM source_connectors WHERE product_id = ? AND kind = ? AND external_id = ?",
+    ).get(input.productId, input.kind, input.externalId) as Row | undefined;
+    const id = existing ? String(existing.id) : randomUUID();
+    this.database.prepare(`
+      INSERT INTO source_connectors (
+        id, product_id, kind, name, external_id, source_url, status,
+        last_synced_at, last_error, imported_count, rate_limit_remaining, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'connected', '', '', 0, NULL, ?, ?)
+      ON CONFLICT(product_id, kind, external_id) DO UPDATE SET
+        name = excluded.name,
+        source_url = excluded.source_url,
+        status = 'connected',
+        last_error = '',
+        updated_at = excluded.updated_at
+    `).run(id, input.productId, input.kind, input.name, input.externalId, input.sourceUrl, existing ? String(existing.created_at) : timestamp, timestamp);
+    this.recordEvent("connector.connected", "connector", id, `${input.name} connected to ${product.name} as a read-only signal source.`, { kind: input.kind, externalId: input.externalId });
+    return this.getSourceConnector(id);
+  }
+
+  getSourceConnector(id: string): SourceConnector {
+    const row = this.database.prepare(`
+      SELECT c.*, p.name AS product_name
+      FROM source_connectors c JOIN products p ON p.id = c.product_id
+      WHERE c.id = ? AND p.is_demo = 0
+    `).get(id) as Row | undefined;
+    if (!row) throw new Error("Source connector not found");
+    return this.mapSourceConnector(row);
+  }
+
+  finishSourceSync(id: string, importedCount: number, rateLimitRemaining: number | null): SourceConnector {
+    const timestamp = now();
+    this.database.prepare(`
+      UPDATE source_connectors
+      SET status = 'connected', last_synced_at = ?, last_error = '', imported_count = imported_count + ?,
+          rate_limit_remaining = ?, updated_at = ?
+      WHERE id = ?
+    `).run(timestamp, importedCount, rateLimitRemaining, timestamp, id);
+    this.recordEvent("connector.synced", "connector", id, `${importedCount} new signal candidate${importedCount === 1 ? "" : "s"} imported for review.`, { importedCount });
+    return this.getSourceConnector(id);
+  }
+
+  failSourceSync(id: string, message: string, rateLimitRemaining: number | null = null): SourceConnector {
+    const safeMessage = message.trim().slice(0, 280) || "GitHub sync failed.";
+    this.database.prepare(`
+      UPDATE source_connectors
+      SET status = 'error', last_error = ?, rate_limit_remaining = ?, updated_at = ?
+      WHERE id = ?
+    `).run(safeMessage, rateLimitRemaining, now(), id);
+    return this.getSourceConnector(id);
+  }
+
+  disconnectSourceConnector(id: string): void {
+    const connector = this.getSourceConnector(id);
+    this.database.prepare("DELETE FROM source_connectors WHERE id = ?").run(id);
+    this.recordEvent("connector.disconnected", "connector", id, `${connector.name} disconnected. Previously imported evidence and decisions were preserved.`, { kind: connector.kind });
+  }
+
+  private mapSourceConnector(row: Row): SourceConnector {
+    return {
+      id: String(row.id), productId: String(row.product_id), productName: String(row.product_name),
+      kind: String(row.kind) as SourceConnector["kind"], name: String(row.name), externalId: String(row.external_id),
+      sourceUrl: String(row.source_url), status: String(row.status) as SourceConnector["status"],
+      lastSyncedAt: String(row.last_synced_at), lastError: String(row.last_error), importedCount: Number(row.imported_count),
+      rateLimitRemaining: row.rate_limit_remaining === null ? null : Number(row.rate_limit_remaining), createdAt: String(row.created_at),
+    };
   }
 
   decideSignalCandidate(id: string, action: "accept" | "dismiss" | "restore"): void {
@@ -730,7 +837,8 @@ export class DistributionDatabase {
         (SELECT COUNT(*) FROM evidence e JOIN products p ON p.id = e.product_id WHERE p.is_demo = 0) AS evidence_items,
         (SELECT COUNT(*) FROM signal_candidates s JOIN products p ON p.id = s.product_id WHERE s.status = 'new' AND p.is_demo = 0) AS new_signals,
         (SELECT COALESCE(ROUND(AVG(confidence)), 0) FROM products WHERE is_demo = 0) AS analysis_confidence,
-        (SELECT COUNT(*) FROM channels WHERE connected = 1) AS connected_channels
+        (SELECT COUNT(*) FROM channels WHERE connected = 1) AS connected_channels,
+        (SELECT COUNT(*) FROM source_connectors c JOIN products p ON p.id = c.product_id WHERE c.status = 'connected' AND p.is_demo = 0) AS connected_sources
     `).get() as Row;
 
     const eventRows = this.database.prepare(`
@@ -772,7 +880,15 @@ export class DistributionDatabase {
       excerpt: String(row.excerpt), sourceUrl: String(row.source_url), sourceType: String(row.source_type) as SignalCandidate["sourceType"],
       confidence: Number(row.confidence), relevance: Number(row.relevance), reason: String(row.reason),
       status: String(row.status) as SignalCandidate["status"], capturedAt: String(row.captured_at), decidedAt: String(row.decided_at),
+      origin: String(row.origin) as SignalCandidate["origin"], externalId: String(row.external_id),
     }));
+
+    const connectors = (this.database.prepare(`
+      SELECT c.*, p.name AS product_name
+      FROM source_connectors c JOIN products p ON p.id = c.product_id
+      WHERE p.is_demo = 0
+      ORDER BY c.updated_at DESC, c.name
+    `).all() as Row[]).map((row) => this.mapSourceConnector(row));
 
     return {
       generatedAt: now(),
@@ -783,6 +899,7 @@ export class DistributionDatabase {
         evidenceItems: Number(metricRow.evidence_items),
         newSignals: Number(metricRow.new_signals),
         connectedChannels: Number(metricRow.connected_channels),
+        connectedSources: Number(metricRow.connected_sources),
         analysisConfidence: Number(metricRow.analysis_confidence),
       },
       onboarding: {
@@ -793,6 +910,7 @@ export class DistributionDatabase {
       channels,
       opportunities,
       signalInbox,
+      connectors,
       audienceSignals,
       recentEvents,
       harnessRuns: this.getRecentHarnessRuns(),

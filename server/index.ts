@@ -9,6 +9,7 @@ import { synthesizeProductBrief } from "./onboarding-harness.ts";
 import { generateDistributionPlan } from "./distribution-harness.ts";
 import { writeContributionDraft } from "./contribution-harness.ts";
 import { AgentRuntimeExecutor } from "./runtime-executor.ts";
+import { GitHubConnectorService } from "./github-connector.ts";
 import { isProductStage, type ChannelMode, type OnboardProductInput, type OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
@@ -16,6 +17,7 @@ const database = new DistributionDatabase();
 const aiControlPlane = new AIControlPlaneStore(database.dataDirectory);
 const modelExecutor = new NativeModelExecutor(aiControlPlane);
 const runtimeExecutor = new AgentRuntimeExecutor(aiControlPlane);
+const githubConnector = new GitHubConnectorService(database);
 const projectRoot = resolve(process.cwd());
 const distDirectory = join(projectRoot, "dist");
 
@@ -125,6 +127,24 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/refresh") {
+      json(response, 200, database.getDashboard());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/connectors/github") {
+      const body = await readJson(request);
+      const result = await githubConnector.connect(String(body.productId || ""), String(body.repository || ""));
+      json(response, 201, { ...result, dashboard: database.getDashboard() });
+      return;
+    }
+    const connectorSyncMatch = url.pathname.match(/^\/api\/connectors\/([^/]+)\/sync$/);
+    if (request.method === "POST" && connectorSyncMatch) {
+      const result = await githubConnector.sync(decodeURIComponent(connectorSyncMatch[1]));
+      json(response, 200, { ...result, dashboard: database.getDashboard() });
+      return;
+    }
+    const connectorMatch = url.pathname.match(/^\/api\/connectors\/([^/]+)$/);
+    if (request.method === "DELETE" && connectorMatch) {
+      database.disconnectSourceConnector(decodeURIComponent(connectorMatch[1]));
       json(response, 200, database.getDashboard());
       return;
     }

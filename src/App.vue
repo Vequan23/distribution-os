@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import { activateAgentRuntime, activateModelProfile, captureProductSignals, decideOpportunity, decideSignal, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, recordOpportunityOutcome, refreshWorkspace, saveModelProfile, testModelProfile, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
+import { activateAgentRuntime, activateModelProfile, captureProductSignals, connectGitHubSource, decideOpportunity, decideSignal, disconnectSourceConnector, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, recordOpportunityOutcome, refreshWorkspace, saveModelProfile, syncSourceConnector, testModelProfile, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
 import type { AIControlPlane, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
 
@@ -31,6 +31,9 @@ const signalBusy = ref(false);
 const signalActionId = ref("");
 const signalNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const signalForm = reactive({ productId: "", type: "text" as "text" | "url", label: "", value: "" });
+const connectorBusyId = ref("");
+const connectorNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
+const connectorForm = reactive({ productId: "", repository: "" });
 const draftBusy = ref(false);
 const draftNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const channelEditingId = ref("");
@@ -41,9 +44,8 @@ const profileForm = reactive({ name: "", provider: "anthropic" as ModelProviderI
 const readyOpportunities = computed(() => state.value?.opportunities.filter((item) => item.status === "ready") ?? []);
 const selected = computed(() => {
   if (!state.value) return null;
-  return state.value.opportunities.find((item) => item.id === selectedId.value)
+  return state.value.opportunities.find((item) => item.id === selectedId.value && item.status === "ready")
     ?? readyOpportunities.value[0]
-    ?? state.value.opportunities[0]
     ?? null;
 });
 const approved = computed(() => state.value?.opportunities.filter((item) => item.status === "approved") ?? []);
@@ -61,6 +63,8 @@ onMounted(async () => {
   try {
     state.value = await loadDashboard();
     signalForm.productId = state.value.products[0]?.id ?? "";
+    connectorForm.productId = state.value.products[0]?.id ?? "";
+    connectorForm.repository = state.value.products[0]?.repositoryUrl.includes("github.com") ? state.value.products[0].repositoryUrl : "";
     if (state.value.onboarding.required) view.value = "onboarding";
     selectedId.value = readyOpportunities.value[0]?.id ?? state.value.opportunities[0]?.id ?? "";
   } catch (cause) {
@@ -241,6 +245,63 @@ async function reviewSignal(id: string, action: "accept" | "dismiss" | "restore"
   }
 }
 
+function selectConnectorProduct(productId: string): void {
+  connectorForm.productId = productId;
+  const product = state.value?.products.find((item) => item.id === productId);
+  if (!connectorForm.repository.trim() || connectorForm.repository.includes("github.com")) {
+    connectorForm.repository = product?.repositoryUrl.includes("github.com") ? product.repositoryUrl : "";
+  }
+}
+
+async function connectGitHub(): Promise<void> {
+  connectorNotice.value = null;
+  if (!connectorForm.productId || !connectorForm.repository.trim()) {
+    connectorNotice.value = { tone: "danger", title: "Repository required", detail: "Choose a product and enter a GitHub repository URL or owner/repository." };
+    return;
+  }
+  connectorBusyId.value = "new";
+  try {
+    const result = await connectGitHubSource(connectorForm.productId, connectorForm.repository.trim());
+    state.value = result.dashboard;
+    connectorNotice.value = result.importedCount
+      ? { tone: "success", title: "GitHub source connected", detail: `${result.importedCount} new issue signal${result.importedCount === 1 ? "" : "s"} entered the review inbox. Nothing became evidence automatically.` }
+      : { tone: "warning", title: "GitHub source connected", detail: `Distribution-OS inspected ${result.inspectedCount} issue${result.inspectedCount === 1 ? "" : "s"}; all were already represented or no issues were available.` };
+  } catch (cause) {
+    connectorNotice.value = { tone: "danger", title: "GitHub could not be connected", detail: cause instanceof Error ? cause.message : "The repository could not be read." };
+  } finally {
+    connectorBusyId.value = "";
+  }
+}
+
+async function syncConnector(id: string): Promise<void> {
+  connectorBusyId.value = id;
+  connectorNotice.value = null;
+  try {
+    const result = await syncSourceConnector(id);
+    state.value = result.dashboard;
+    connectorNotice.value = result.importedCount
+      ? { tone: "success", title: "GitHub signals refreshed", detail: `${result.importedCount} new issue signal${result.importedCount === 1 ? "" : "s"} entered the review inbox.` }
+      : { tone: "success", title: "GitHub is up to date", detail: `${result.inspectedCount} recent issue${result.inspectedCount === 1 ? " was" : "s were"} inspected with no new candidates.` };
+  } catch (cause) {
+    connectorNotice.value = { tone: "danger", title: "GitHub sync failed", detail: cause instanceof Error ? cause.message : "The source could not be refreshed." };
+  } finally {
+    connectorBusyId.value = "";
+  }
+}
+
+async function disconnectConnector(id: string): Promise<void> {
+  connectorBusyId.value = id;
+  connectorNotice.value = null;
+  try {
+    state.value = await disconnectSourceConnector(id);
+    connectorNotice.value = { tone: "success", title: "Source disconnected", detail: "Previously imported candidates, accepted evidence, and decisions were preserved." };
+  } catch (cause) {
+    connectorNotice.value = { tone: "danger", title: "Source could not be disconnected", detail: cause instanceof Error ? cause.message : "Try again." };
+  } finally {
+    connectorBusyId.value = "";
+  }
+}
+
 async function writeDraft(): Promise<void> {
   if (!selected.value) return;
   draftBusy.value = true;
@@ -302,15 +363,18 @@ async function saveChannel(channel: Channel): Promise<void> {
   }
 }
 
-async function decide(action: "approve" | "skip" | "restore"): Promise<void> {
-  if (!selected.value) return;
+async function decide(action: "approve" | "skip" | "restore", target: Opportunity | null = selected.value): Promise<void> {
+  if (!target) return;
   actionBusy.value = true;
   error.value = "";
-  const currentId = selected.value.id;
+  const currentId = target.id;
   try {
-    state.value = await decideOpportunity(currentId, action, draft.value);
+    state.value = await decideOpportunity(currentId, action, action === "restore" ? undefined : draft.value);
     if (action !== "restore") {
-      selectedId.value = state.value.opportunities.find((item) => item.status === "ready")?.id ?? currentId;
+      selectedId.value = state.value.opportunities.find((item) => item.status === "ready")?.id ?? "";
+    } else {
+      selectedId.value = currentId;
+      view.value = "command";
     }
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "The decision could not be recorded.";
@@ -368,7 +432,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
     <osx-app-shell
       app-title="Distribution-OS"
       sidebar-width="244px"
-      inspector-width="354px"
+      inspector-width="410px"
       :inspector-open="view === 'command'"
       label="Distribution-OS command workspace"
     >
@@ -400,7 +464,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </template>
         <section class="privacy-card">
           <osx-icon name="lock" :size="18"></osx-icon>
-          <div><strong>Private by default</strong><span>Product memory and drafts remain on this machine.</span></div>
+          <div><strong>Private by default</strong><span>The ledger stays local. Configured AI providers receive only bounded run evidence.</span></div>
         </section>
       </nav>
 
@@ -431,7 +495,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <article><span>Ready moves</span><strong>{{ state.metrics.readyMoves }}</strong><small>Ranked by usefulness</small></article>
           <article><span>Approved</span><strong>{{ state.metrics.approvedMoves }}</strong><small>Waiting for execution</small></article>
           <article><span>Product evidence</span><strong>{{ state.metrics.evidenceItems }}</strong><small>Across {{ state.products.length }} product{{ state.products.length === 1 ? "" : "s" }}</small></article>
-          <article><span>Live connectors</span><strong>{{ state.metrics.connectedChannels }}</strong><small>Manual gates active</small></article>
+          <article><span>Signal sources</span><strong>{{ state.metrics.connectedSources }}</strong><small>Read-only · human reviewed</small></article>
         </section>
 
         <section class="queue-section">
@@ -495,7 +559,25 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </header>
 
         <section v-if="state.products.length" class="audience-signal-panel signal-capture-panel">
-          <div class="section-heading"><div><p class="eyebrow">CAPTURE</p><h2>Add a real observation</h2><p>Paste the relevant part of a public discussion or import its URL. Read-only platform connectors will feed this same inbox later.</p></div><osx-badge tone="info">Manual source</osx-badge></div>
+          <div class="section-heading"><div><p class="eyebrow">READ-ONLY SOURCE</p><h2>Connect GitHub issues</h2><p>Import recent repository issues as candidates. Pull requests are excluded, duplicate issues are ignored, and every observation still requires your review.</p></div><osx-badge :tone="state.connectors.length ? 'success' : 'info'" dot>{{ state.connectors.length }} connected</osx-badge></div>
+          <form class="connector-form" @submit.prevent="connectGitHub">
+            <label>Product<select :value="connectorForm.productId" @change="selectConnectorProduct(($event.target as HTMLSelectElement).value)"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
+            <label>GitHub repository <small>Public repos work without a token</small><input v-model="connectorForm.repository" inputmode="url" placeholder="owner/repository or https://github.com/…" /></label>
+            <osx-button type="button" variant="primary" icon="git-branch" :loading="connectorBusyId === 'new'" :disabled="Boolean(connectorBusyId) || !connectorForm.repository.trim()" @click="connectGitHub">Connect & import</osx-button>
+          </form>
+          <div v-if="state.connectors.length" class="connector-list">
+            <article v-for="connector in state.connectors" :key="connector.id">
+              <span class="connector-mark"><osx-icon name="git-branch" :size="20"></osx-icon></span>
+              <div><strong>{{ connector.name }}</strong><small>{{ connector.productName }} · {{ connector.lastSyncedAt ? `synced ${formatDate(connector.lastSyncedAt)} at ${formatTime(connector.lastSyncedAt)}` : 'not synced' }} · {{ connector.importedCount }} imported</small><p v-if="connector.lastError">{{ connector.lastError }}</p></div>
+              <osx-badge :tone="connector.status === 'connected' ? 'success' : 'danger'" dot>{{ connector.status }}</osx-badge>
+              <span class="connector-actions"><osx-button size="small" icon="refresh" :loading="connectorBusyId === connector.id" :disabled="Boolean(connectorBusyId)" @click="syncConnector(connector.id)">Sync</osx-button><osx-button size="small" :disabled="Boolean(connectorBusyId)" @click="disconnectConnector(connector.id)">Disconnect</osx-button></span>
+            </article>
+          </div>
+          <osx-alert v-if="connectorNotice" :tone="connectorNotice.tone" :title="connectorNotice.title" dismissible @dismiss="connectorNotice = null">{{ connectorNotice.detail }}</osx-alert>
+        </section>
+
+        <section v-if="state.products.length" class="audience-signal-panel signal-capture-panel">
+          <div class="section-heading"><div><p class="eyebrow">MANUAL CAPTURE</p><h2>Add a bounded observation</h2><p>Paste only the relevant public discussion context or import its URL when no connector exists.</p></div><osx-badge tone="info">Manual source</osx-badge></div>
           <form class="signal-form" @submit.prevent="captureSignal">
             <label>Product<select v-model="signalForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
             <label>Source type<select v-model="signalForm.type"><option value="text">Paste discussion context</option><option value="url">Public URL</option></select></label>
@@ -516,7 +598,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <div v-if="newSignals.length" class="signal-inbox-list">
             <article v-for="signal in newSignals" :key="signal.id" class="signal-candidate-card">
               <span class="signal-icon"><osx-icon :name="signal.kind === 'question' ? 'help-circle' : signal.kind === 'pain' ? 'alert-circle' : signal.kind === 'request' ? 'message-circle' : 'search'" :size="19"></osx-icon></span>
-              <div class="signal-candidate-copy"><div><osx-badge tone="info" size="small">{{ signal.kind }}</osx-badge><span>{{ signal.productName }} · {{ formatDate(signal.capturedAt) }}</span></div><h3>{{ signal.title }}</h3><p>{{ signal.summary }}</p><small>{{ signal.reason }}</small></div>
+              <div class="signal-candidate-copy"><div><osx-badge tone="info" size="small">{{ signal.kind }}</osx-badge><osx-badge v-if="signal.origin === 'github'" size="small">GitHub</osx-badge><span>{{ signal.productName }} · {{ formatDate(signal.capturedAt) }}</span></div><h3>{{ signal.title }}</h3><p>{{ signal.summary }}</p><small>{{ signal.reason }}</small></div>
               <div class="signal-relevance"><strong>{{ signal.relevance }}</strong><span>RELEVANCE</span></div>
               <footer><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Inspect source</osx-link><span v-else>Founder-supplied excerpt</span><div><osx-button size="small" :disabled="Boolean(signalActionId)" @click="reviewSignal(signal.id, 'dismiss')">Dismiss</osx-button><osx-button size="small" variant="primary" icon="check" :loading="signalActionId === signal.id" :disabled="Boolean(signalActionId)" @click="reviewSignal(signal.id, 'accept')">Accept as evidence</osx-button></div></footer>
             </article>
@@ -539,17 +621,17 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <section v-if="state.products.length" class="audience-signal-panel">
           <div class="section-heading"><div><p class="eyebrow">ACCEPTED AUDIENCE EVIDENCE</p><h2>Observations allowed into the loop.</h2><p>These signals passed human review. They remain bounded observations and are never represented as verified demand or a representative trend.</p></div><span class="heading-actions"><osx-badge tone="info">{{ state.audienceSignals?.length || 0 }} accepted</osx-badge><osx-button size="small" icon="inbox" @click="view = 'signals'">Open Signal Inbox</osx-button></span></div>
           <div v-if="state.audienceSignals?.length" class="signal-list">
-            <article v-for="signal in state.audienceSignals" :key="signal.id"><span class="signal-icon"><osx-icon :name="signal.sourceType === 'url' ? 'globe' : 'message-circle'" :size="18"></osx-icon></span><div><strong>{{ signal.title }}</strong><p>{{ signal.summary }}</p><small>{{ signal.productName }} · {{ formatDate(signal.occurredAt) }} · founder supplied</small></div><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Open source</osx-link></article>
+            <article v-for="signal in state.audienceSignals" :key="signal.id"><span class="signal-icon"><osx-icon :name="signal.sourceType === 'url' ? 'globe' : 'message-circle'" :size="18"></osx-icon></span><div><strong>{{ signal.title }}</strong><p>{{ signal.summary }}</p><small>{{ signal.productName }} · {{ formatDate(signal.occurredAt) }} · {{ signal.sourceUrl ? 'public source' : 'founder supplied' }}</small></div><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Open source</osx-link></article>
           </div>
           <osx-empty-state v-else icon="message-circle" title="No accepted audience evidence yet">Product evidence explains what you built. Audience evidence explains what people are discussing. Capture and review one real observation before asking the agent to infer where to contribute.<osx-button slot="actions" variant="primary" icon="inbox" @click="view = 'signals'">Open Signal Inbox</osx-button></osx-empty-state>
         </section>
       </main>
 
       <main v-else-if="state && view === 'campaigns'" class="workspace-page">
-        <header><p class="eyebrow">CAMPAIGNS</p><h1>Approved narratives in motion.</h1><p>One product moment can become several channel-native contributions without repeating itself.</p></header>
+        <header><p class="eyebrow">CAMPAIGNS</p><h1>Approved work awaiting execution.</h1><p>These contributions passed review. Execute them manually, then record what actually happened so the next plan can learn.</p></header>
         <section class="data-panel">
           <div v-for="opportunity in approved" :key="opportunity.id" class="campaign-row">
-            <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" @click="selectOpportunity(opportunity); decide('restore')">Return to queue</osx-button><osx-button size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
+            <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" @click="decide('restore', opportunity)">Return to queue</osx-button><osx-button size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
           </div>
           <form v-if="outcomeOpportunityId" class="outcome-form" @submit.prevent="saveOutcome">
             <div><p class="eyebrow">CLOSE THE LOOP</p><h2>What happened after the approved move?</h2><p>Measured outcomes become evidence for the next planning run.</p></div>
@@ -558,20 +640,20 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             <label class="wide">What did you learn?<textarea v-model="outcomeForm.note" rows="3" placeholder="Optional context that should influence the next plan"></textarea></label>
             <footer><osx-button size="small" @click="outcomeOpportunityId = ''">Cancel</osx-button><osx-button type="button" variant="primary" icon="check" :loading="actionBusy" @click="saveOutcome">Record & learn</osx-button></footer>
           </form>
-          <osx-empty-state v-if="!approved.length" icon="send" title="No approved campaigns yet">Approve a move from the Command Center to place it here.</osx-empty-state>
+          <osx-empty-state v-if="!approved.length" icon="send" title="Nothing approved for execution">Review a move in the Command Center. Approved work appears here; Distribution-OS does not publish it automatically.</osx-empty-state>
         </section>
       </main>
 
       <main v-else-if="state && view === 'channels'" class="workspace-page">
-        <header><p class="eyebrow">CHANNEL POLICY</p><h1>Autonomy is granted—not assumed.</h1><p>Every destination owns its own approval mode, volume limit, and connection state.</p></header>
+        <header><p class="eyebrow">CHANNEL POLICY</p><h1>Decide how work reaches each channel.</h1><p>Set planning limits and whether a channel produces drafts or requires approval. Publishing connections are not enabled yet.</p></header>
         <section class="channel-grid">
           <article v-for="channel in state.channels" :key="channel.id" class="channel-card">
             <header><span class="channel-mark">{{ channel.name.charAt(0) }}</span><div><h2>{{ channel.name }}</h2><p>{{ channel.handle }}</p></div><osx-badge :tone="channel.connected ? 'success' : channel.status === 'manual' ? 'warning' : 'neutral'" dot>{{ channel.status }}</osx-badge></header>
             <dl><div><dt>Execution mode</dt><dd>{{ channel.mode }}</dd></div><div><dt>Daily limit</dt><dd>{{ channel.dailyLimit }}</dd></div><div><dt>Reply automation</dt><dd>Approval required</dd></div></dl>
             <form v-if="channelEditingId === channel.id" class="channel-policy-form" @submit.prevent="saveChannel(channel)">
-              <label>Execution mode<select v-model="channelForm.mode"><option value="draft">Draft only</option><option value="approval">Human approval</option><option value="autopilot">Autopilot within policy</option></select></label>
+              <label>Review mode<select v-model="channelForm.mode"><option value="draft">Draft only</option><option value="approval">Human approval</option></select></label>
               <label>Daily limit<input v-model.number="channelForm.dailyLimit" type="number" min="0" max="100" step="1" /></label>
-              <small>Connection credentials are configured separately. This policy only governs what the harness may propose or execute.</small>
+              <small>This governs planning and review only. Distribution-OS does not currently publish to this channel.</small>
               <footer><osx-button size="small" @click="channelEditingId = ''">Cancel</osx-button><osx-button type="button" size="small" variant="primary" icon="check" :loading="actionBusy" @click="saveChannel(channel)">Save policy</osx-button></footer>
             </form>
             <footer v-else><osx-toggle :checked="channel.connected" disabled>{{ channel.connected ? 'Connection enabled' : 'Not connected' }}</osx-toggle><osx-button size="small" icon="settings" @click="editChannel(channel)">Configure policy</osx-button></footer>
@@ -680,7 +762,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       </main>
 
       <main v-else-if="state && view === 'settings'" class="workspace-page">
-        <header><p class="eyebrow">SYSTEM</p><h1>Local control plane.</h1><p>The database, product memory, voice model, and approval history stay under your control.</p></header>
+        <header><p class="eyebrow">SYSTEM</p><h1>Local control plane.</h1><p>Product evidence, signal decisions, drafts, and approval history remain in your local ledger.</p></header>
         <section class="settings-grid">
           <article><osx-icon name="lock" :size="24"></osx-icon><div><h2>Private local ledger</h2><p>{{ state.storage.location }}</p></div><osx-badge tone="success">Active</osx-badge></article>
           <article><osx-icon name="activity" :size="24"></osx-icon><div><h2>Managed execution cloud</h2><p>Optional future layer for scheduled publishing, monitoring, and team access.</p></div><osx-badge>Not enabled</osx-badge></article>

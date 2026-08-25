@@ -1,4 +1,4 @@
-import type { AIControlPlane, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft } from "../server/domain.ts";
+import type { AIControlPlane, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft, SourceConnector } from "../server/domain.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -99,6 +99,24 @@ export function decideSignal(id: string, action: "accept" | "dismiss" | "restore
     method: "POST",
     body: JSON.stringify({ action }),
   });
+}
+
+export function connectGitHubSource(productId: string, repository: string): Promise<{ connector: SourceConnector; importedCount: number; inspectedCount: number; dashboard: DashboardState }> {
+  return request<{ connector: SourceConnector; importedCount: number; inspectedCount: number; dashboard: DashboardState }>("/api/connectors/github", {
+    method: "POST",
+    body: JSON.stringify({ productId, repository }),
+  });
+}
+
+export function syncSourceConnector(id: string): Promise<{ connector: SourceConnector; importedCount: number; inspectedCount: number; dashboard: DashboardState }> {
+  return request<{ connector: SourceConnector; importedCount: number; inspectedCount: number; dashboard: DashboardState }>(`/api/connectors/${encodeURIComponent(id)}/sync`, {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export function disconnectSourceConnector(id: string): Promise<DashboardState> {
+  return request<DashboardState>(`/api/connectors/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function writeOpportunityDraft(id: string): Promise<{ result: ContributionDraftResult; dashboard: DashboardState }> {

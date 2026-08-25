@@ -12,6 +12,7 @@ body { min-height: 100vh; background: radial-gradient(circle at 55% -10%, #2b485
 button, input, textarea, select { font: inherit; }
 button { font-size: 13px; }
 input, textarea, select { font-size: 13px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid rgba(72, 181, 226, .42); outline-offset: 2px; }
 
 .app-stage { min-height: 100vh; padding: 18px; }
 .app-stage > osx-app-shell { height: calc(100vh - 36px); min-height: 720px; }
@@ -135,7 +136,7 @@ input, textarea, select { font-size: 13px; }
 .opportunity-score span { grid-column: 1; color: #758994; font-size: 12px; font-weight: 800; letter-spacing: .12em; }
 .opportunity-score osx-icon { grid-column: 2; grid-row: 1 / 3; color: #708994; }
 
-.inspector-panel { min-height: 100%; padding: 16px; color: var(--osx-text); }
+.inspector-panel { height: 100%; min-height: 0; overflow-y: auto; padding: 16px 18px 28px; color: var(--osx-text); scrollbar-gutter: stable; }
 .inspector-panel.empty { display: grid; place-items: center; }
 .inspector-panel.empty osx-empty-state { width: 100%; }
 .inspector-panel > header { display: flex; justify-content: space-between; gap: 12px; align-items: start; padding-bottom: 13px; border-bottom: 1px solid #34454d; }
@@ -184,8 +185,22 @@ input, textarea, select { font-size: 13px; }
 .signal-form { display: grid; grid-template-columns: minmax(180px,.7fr) minmax(180px,.7fr) minmax(240px,1fr); gap: 12px; padding: 15px; border: 1px solid #32464f; border-radius: 9px; background: #101b20; }
 .signal-form label { display: grid; gap: 7px; color: #c8d7de; font-size: 12px; font-weight: 700; }
 .signal-form label small { color: #718791; font-size: 12px; font-weight: 500; }
+.signal-form input, .signal-form textarea, .signal-form select, .connector-form input, .connector-form select, .outcome-form input, .outcome-form textarea, .outcome-form select { width: 100%; min-height: 40px; padding: 9px 11px; border: 1px solid #455c66; border-radius: 7px; outline: 0; color: #e1ebef; background: #0b1419; line-height: 1.5; }
+.signal-form textarea, .outcome-form textarea { resize: vertical; }
+.signal-form input:focus, .signal-form textarea:focus, .signal-form select:focus, .connector-form input:focus, .connector-form select:focus, .outcome-form input:focus, .outcome-form textarea:focus, .outcome-form select:focus { border-color: #42a8d3; box-shadow: 0 0 0 3px rgba(49,151,194,.18); }
 .signal-form label.wide, .signal-form footer { grid-column: 1 / -1; }
 .signal-form footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; color: #80949e; font-size: 12px; }
+.connector-form { display: grid; grid-template-columns: minmax(190px,.55fr) minmax(320px,1fr) auto; gap: 12px; align-items: end; padding: 15px; border: 1px solid #32464f; border-radius: 9px; background: #101b20; }
+.connector-form label { min-width: 0; display: grid; gap: 7px; color: #c8d7de; font-size: 12px; font-weight: 700; }
+.connector-form label small { color: #718791; font-size: 12px; font-weight: 500; }
+.connector-list { display: grid; gap: 8px; margin-top: 11px; }
+.connector-list article { min-width: 0; display: grid; grid-template-columns: 42px minmax(0,1fr) auto auto; gap: 11px; align-items: center; padding: 12px; border: 1px solid #344a54; border-radius: 8px; background: #101b20; }
+.connector-mark { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid #397a96; border-radius: 9px; color: #72caed; background: #142a34; }
+.connector-list article > div { min-width: 0; display: grid; gap: 3px; }
+.connector-list strong { overflow: hidden; color: #dae6eb; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.connector-list small { overflow: hidden; color: #7e929b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.connector-list p { margin: 3px 0 0; color: #e28b84; font-size: 12px; line-height: 1.4; }
+.connector-actions { display: inline-flex; gap: 7px; align-items: center; }
 .signal-list { display: grid; gap: 8px; margin-top: 12px; }
 .signal-list article { display: grid; grid-template-columns: 38px minmax(0,1fr) auto; gap: 11px; align-items: start; padding: 13px; border: 1px solid #30444d; border-radius: 8px; background: #111d22; }
 .signal-icon { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid #39718a; border-radius: 50%; color: #69c3e8; background: #142a34; }
@@ -318,6 +333,7 @@ input, textarea, select { font-size: 13px; }
   .metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .audience-grid { grid-template-columns: 1fr; }
   .signal-form { grid-template-columns: 1fr; }.signal-form label.wide, .signal-form footer { grid-column: auto; }.signal-form footer { align-items: stretch; flex-direction: column; }.signal-list article { grid-template-columns: 38px minmax(0,1fr); }.signal-list article > osx-link { grid-column: 2; }
+  .connector-form { grid-template-columns: minmax(180px,.55fr) minmax(0,1fr); }.connector-form osx-button { grid-column: 1 / -1; justify-self: end; }
   .signal-candidate-card { grid-template-columns: 38px minmax(0,1fr) 72px; }
   .opportunity-card { grid-template-columns: 34px minmax(0,1fr) 58px; }
   .source-type-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -330,6 +346,7 @@ input, textarea, select { font-size: 13px; }
   .source-list { display: flex; gap: 6px; overflow-x: auto; padding: 8px; }
   .brand-block, .nav-section, .privacy-card { display: none; }
   .nav-item { width: auto; min-width: max-content; grid-template-columns: 20px auto auto; padding-inline: 11px; }
+  .source-list { scroll-snap-type: x proximity; }.nav-item { scroll-snap-align: start; }
   .command-center, .workspace-page { padding: 18px 14px; }
   .onboarding-page { padding: 18px 14px; }
   .onboarding-hero, .page-header-with-action { flex-direction: column; }
@@ -344,11 +361,14 @@ input, textarea, select { font-size: 13px; }
   .provider-layout { grid-template-columns: 1fr; }.provider-list { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid #354951; }.provider-list button { min-width: 150px; }
   .provider-form footer { align-items: start; flex-direction: column; }
   .signal-candidate-card { grid-template-columns: 38px minmax(0,1fr); }.signal-relevance { grid-column: 2; grid-row: 1; }.signal-candidate-card > footer { grid-column: 2; align-items: stretch; flex-direction: column; }.signal-candidate-card > footer > div { flex-wrap: wrap; }.draft-panel > footer { align-items: stretch; flex-direction: column; }
+  .connector-list article { grid-template-columns: 42px minmax(0,1fr) auto; }.connector-actions { grid-column: 2 / -1; justify-content: flex-end; }
   .campaign-row { grid-template-columns: 12px minmax(0,1fr) auto; }.campaign-actions { grid-column: 2 / -1; flex-wrap: wrap; }.outcome-form { grid-template-columns: 1fr; }.outcome-form label.wide, .outcome-form footer { grid-column: auto; }
 }
 
 @media (max-width: 520px) {
-  .toolbar-summary { display: none; }
+  .toolbar-summary, .toolbar-actions > osx-badge, .engine-chip { display: none; }
+  .toolbar-actions { width: 100%; justify-content: flex-end; }
+  .toolbar-actions osx-button:first-of-type { display: none; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .opportunity-card { grid-template-columns: 28px minmax(0,1fr); padding: 12px; }
   .opportunity-score { grid-column: 2; grid-template-columns: auto auto auto; justify-content: start; justify-items: start; gap: 7px; }
@@ -366,4 +386,9 @@ input, textarea, select { font-size: 13px; }
   .provider-form-grid { grid-template-columns: 1fr; }.provider-form label.wide { grid-column: auto; }
   .profile-list article { grid-template-columns: 36px minmax(0,1fr); }.profile-list article > osx-badge, .profile-list article > osx-button, .profile-list article > .profile-actions { grid-column: 2; justify-self: start; }
   .reviewed-signal-list article { grid-template-columns: minmax(0,1fr) auto; }.reviewed-signal-list article > osx-button { grid-column: 1 / -1; justify-self: start; }
+  .section-heading { align-items: flex-start; flex-direction: column; }
+  .heading-actions { justify-content: flex-start; }
+  .connector-form { grid-template-columns: 1fr; }.connector-form osx-button { grid-column: auto; justify-self: stretch; }
+  .connector-list article { grid-template-columns: 40px minmax(0,1fr); }.connector-list article > osx-badge { grid-column: 2; justify-self: start; }.connector-actions { grid-column: 1 / -1; justify-content: stretch; }.connector-actions osx-button { flex: 1; }
+  .metric-grid article { padding: 11px; }.metric-grid small { white-space: normal; line-height: 1.35; }
 }

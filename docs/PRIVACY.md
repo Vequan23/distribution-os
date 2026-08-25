@@ -6,6 +6,7 @@ Distribution-OS is local-first because product positioning, founder voice, draft
 
 - Approved product memory and bounded source excerpts
 - Public discussion URLs or bounded audience excerpts the founder explicitly captures, including dismissed Signal Inbox candidates retained as decision history
+- Read-only connector metadata, sync timestamps, safe rate-limit state, and bounded GitHub issue excerpts imported for review
 - Generated drafts and opportunity evidence links
 - Human decisions and manually captured outcomes
 - Harness run/step metadata and concise failure diagnostics
@@ -20,6 +21,8 @@ Distribution-OS is local-first because product positioning, founder voice, draft
 - Unbounded dependency trees, build output, repository history, or binary files
 
 API keys entered in the macOS UI use Keychain. Environment variables are supported for automated setups. Runtime workspaces are created in the operating system's temporary directory and deleted after the run.
+
+`GITHUB_TOKEN` is read only from the service environment. It is never copied into SQLite, UI state, events, or imported signal records.
 
 ## Public actions
 

@@ -20,6 +20,8 @@ Most distribution tools optimize one channel or make it easier to send more mess
 flowchart LR
   A["Product sources"] --> B["Cited product memory"]
   B --> C["Governed agent plan"]
+  I["GitHub issues or manual observations"] --> J{"Signal review"}
+  J -->|Accept| C
   C --> D["Editable distribution move"]
   D --> E{"Human decision"}
   E -->|Approve| F["Manual execution"]
@@ -43,6 +45,7 @@ Every proposed move must answer four questions:
 - Optional schema-validated, source-cited AI synthesis for product onboarding
 - Separate evidence classes for founder intent, public claims, implementation, audience observations, and outcomes
 - A quarantined Signal Inbox where observations must be accepted before they become citable audience evidence
+- A read-only GitHub Issues connector with manual sync, pull-request filtering, deduplication, and the same human evidence gate
 - Multi-provider model profiles with environment-variable or macOS Keychain credentials
 - A native Vercel AI SDK `ToolLoopAgent` with an enforced evidence-reading sequence
 - Bounded Claude Code, OpenCode, Codex CLI, and Cursor Agent runtime adapters
@@ -76,7 +79,7 @@ Open [http://127.0.0.1:4190](http://127.0.0.1:4190). The Vite app proxies the lo
 1. Select **Add Product** and provide at least one product source.
 2. Generate and correct the product brief, then approve it as product memory.
 3. Optionally open **AI Harness** to configure a model API or installed agent runtime.
-4. Capture real audience context in **Signal Inbox** when you have a public discussion or bounded observation worth reviewing.
+4. Connect a public GitHub repository in **Signal Inbox**, or manually capture a bounded public observation.
 5. Review new observations in **Signal Inbox**. Only accepted signals become available to planning.
 6. Select **Generate plan** from Product Memory or the Command Center.
 7. Inspect the evidence and use **Write channel draft** when you want the native writer to turn the opportunity into channel-native copy.
@@ -85,6 +88,8 @@ Open [http://127.0.0.1:4190](http://127.0.0.1:4190). The Vite app proxies the lo
 10. Generate the next plan with the accumulated decision and outcome memory.
 
 > **Note:** Refreshing the workspace reloads local dashboard state. It does not silently re-fetch URLs, repositories, or external audience sources.
+
+Public GitHub repositories work without authentication. Set `GITHUB_TOKEN` in the service environment to raise API limits or read a private repository you are authorized to access. The token is read at request time and is never written to the ledger.
 
 ## How the harness is governed
 
@@ -124,6 +129,7 @@ GOOGLE_API_KEY=
 DEEPSEEK_API_KEY=
 OPENROUTER_API_KEY=
 GROQ_API_KEY=
+GITHUB_TOKEN=
 ```
 
 Keys entered through the macOS UI are stored in Keychain. Use **Test** on a profile before running AI onboarding or plan generation. Installed external runtimes must be authenticated through their own CLI.
@@ -150,6 +156,7 @@ Additional boundaries:
 - Runtime evidence workspaces are disposable and removed after each run.
 - URL import resolves and pins DNS, rejects private IPv4/IPv6 targets, revalidates redirects, and enforces a streamed size limit.
 - Repository ingestion is bounded and excludes dependency trees, build output, history, and binary files.
+- GitHub sync calls only `api.github.com`, imports up to 12 recent non-pull-request issues per sync, and quarantines every imported item for human review.
 - No current flow publishes publicly or performs an irreversible channel action.
 
 Read [Privacy and trust](docs/PRIVACY.md) for the storage contract.
@@ -160,7 +167,7 @@ Distribution-OS currently creates evidence-grounded plans and drafts, stores fou
 
 It does **not** yet provide:
 
-- Authenticated social or community connectors
+- Authenticated social or community publishing connectors
 - Autonomous posting or outreach
 - Continuous audience monitoring or representative trend detection
 - Automatic product analytics or revenue attribution
