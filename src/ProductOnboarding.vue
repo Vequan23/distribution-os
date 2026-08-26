@@ -52,7 +52,7 @@ const briefReady = computed(() => Boolean(
 ));
 
 const sourceOptions: Array<{ type: OnboardingSourceType; icon: string; label: string; detail: string }> = [
-  { type: "repository", icon: "folder", label: "Repository folder", detail: "Choose a folder—no path knowledge required" },
+  { type: "repository", icon: "folder", label: "Repository folder", detail: "Choose a folder. No path needed." },
   { type: "url", icon: "globe", label: "Web URL", detail: "Product site, docs, listing, or GitHub" },
   { type: "document", icon: "file-text", label: "Documents", detail: "PDF, DOCX, Markdown, text, or JSON" },
   { type: "text", icon: "edit", label: "Paste context", detail: "PRD, pitch, prompts, notes, or conversations" },
@@ -222,24 +222,24 @@ function sourcesFor(field: ProductBriefField): string {
   <main class="onboarding-page">
     <header class="onboarding-hero">
       <div>
-        <p class="eyebrow">PROJECT ONBOARDING</p>
-        <h1>Start with the evidence.</h1>
-        <p>Choose a project folder or bring whatever explains the product today. Distribution-OS will draft the brief, cite its sources, and ask you to correct what it cannot know.</p>
+        <p class="eyebrow">ADD PROJECT</p>
+        <h1>Tell us what you built.</h1>
+        <p>Choose a project folder or add documents that explain the product. Distribution OS drafts a brief and shows which sources support each field.</p>
       </div>
       <osx-badge tone="success" dot>Private local analysis</osx-badge>
     </header>
 
-    <nav class="onboarding-steps" aria-label="Onboarding progress">
+    <nav class="onboarding-steps" aria-label="Project setup progress">
       <button v-for="item in 3" :key="item" :class="{ active: step === item, complete: step > item }" @click="step = item === 1 || brief ? item : step">
         <span><osx-icon v-if="step > item" name="check" :size="14"></osx-icon><template v-else>{{ item }}</template></span>
-        <strong>{{ item === 1 ? "Product evidence" : item === 2 ? "Generated brief" : "Goal & approval" }}</strong>
+        <strong>{{ item === 1 ? "Sources" : item === 2 ? "Project brief" : "Goal and approval" }}</strong>
       </button>
     </nav>
 
-    <osx-alert v-if="localError || error" tone="danger" title="Onboarding needs attention">{{ localError || error }}</osx-alert>
+    <osx-alert v-if="localError || error" tone="danger" title="Project setup needs attention">{{ localError || error }}</osx-alert>
 
     <section v-if="step === 1" class="onboarding-panel">
-      <div class="panel-heading"><div><p class="eyebrow">01 · PRODUCT EVIDENCE</p><h2>What can explain the product?</h2></div><osx-badge tone="info">{{ sources.length }} added</osx-badge></div>
+      <div class="panel-heading"><div><p class="eyebrow">01 · SOURCES</p><h2>What explains the product?</h2></div><osx-badge tone="info">{{ sources.length }} added</osx-badge></div>
       <div class="source-type-grid">
         <button v-for="option in sourceOptions" :key="option.type" :class="{ active: sourceType === option.type }" @click="sourceType = option.type; localError = ''">
           <osx-icon :name="option.icon" :size="21"></osx-icon><span><strong>{{ option.label }}</strong><small>{{ option.detail }}</small></span>
@@ -250,7 +250,7 @@ function sourcesFor(field: ProductBriefField): string {
         <label class="file-drop repository-drop">
           <osx-icon name="folder" :size="30"></osx-icon>
           <strong>{{ fileBusy ? "Reading repository evidence…" : "Choose repository folder" }}</strong>
-          <span>Only bounded documentation and project manifests are read. Dependencies, builds, Git history, binaries, and secrets are ignored.</span>
+          <span>We read product docs and project manifests. We ignore dependencies, builds, Git history, binaries, and secrets.</span>
           <input type="file" multiple webkitdirectory="" :disabled="fileBusy" @change="addRepositoryFolder" />
         </label>
         <details class="advanced-path">
@@ -288,48 +288,48 @@ function sourcesFor(field: ProductBriefField): string {
           <osx-button size="small" icon="x" aria-label="Remove source" @click="removeSource(index)"></osx-button>
         </article>
       </div>
-      <footer><span>Sources are analyzed locally and nothing is published.</span><osx-button variant="primary" icon="sparkle" :loading="analysisBusy" :disabled="!sourceReady" @click="generateBrief">Generate product brief</osx-button></footer>
+      <footer><span>Distribution OS reads these sources locally and publishes nothing.</span><osx-button variant="primary" icon="sparkle" :loading="analysisBusy" :disabled="!sourceReady" @click="generateBrief">Create project brief</osx-button></footer>
     </section>
 
     <section v-else-if="step === 2 && brief" class="onboarding-panel">
-      <div class="panel-heading"><div><p class="eyebrow">02 · GENERATED BRIEF</p><h2>Correct the machine’s interpretation.</h2></div><osx-badge :tone="confidenceTone(brief.overallConfidence)">{{ brief.overallConfidence }}% draft confidence</osx-badge></div>
+      <div class="panel-heading"><div><p class="eyebrow">02 · PROJECT BRIEF</p><h2>Check what we found.</h2></div><osx-badge :tone="confidenceTone(brief.overallConfidence)">{{ brief.overallConfidence }}% source coverage</osx-badge></div>
       <div class="brief-alert-stack">
         <osx-alert
           :tone="brief.analysis.mode === 'ai' ? 'success' : brief.analysis.mode === 'fallback' ? 'warning' : 'info'"
-          :title="brief.analysis.mode === 'ai' ? 'AI-synthesized and source-cited' : brief.analysis.mode === 'fallback' ? 'AI unavailable—local extraction used' : 'Local evidence extraction'"
+          :title="brief.analysis.mode === 'ai' ? 'AI draft with source citations' : brief.analysis.mode === 'fallback' ? 'AI unavailable. Local draft used.' : 'Local source review'"
         >
           {{ brief.analysis.mode === 'ai'
             ? `${brief.analysis.provider} · ${brief.analysis.model}. Claims without valid source labels remain marked for review.`
-            : brief.analysis.warning || 'Select a ready execution profile to add cited AI synthesis. The local extraction remains fully editable.' }}
+            : brief.analysis.warning || 'Choose a ready option in AI Settings to create an AI draft. The local draft stays editable.' }}
         </osx-alert>
-        <osx-alert tone="info" title="A proposal, not product truth">Every field remains editable. Low-confidence fields require founder judgment before the brief can be approved.</osx-alert>
+        <osx-alert tone="info" title="Review before approval">Every field is editable. Check any field with low source coverage.</osx-alert>
       </div>
       <div class="form-grid generated-brief-grid">
         <label><span>Product name</span><input v-model="form.name" required /><small class="field-meta"><osx-badge :tone="confidenceTone(brief.name.confidence)" size="small">{{ brief.name.confidence }}%</osx-badge>{{ sourcesFor(brief.name) }}</small></label>
         <label><span>Stage</span><select v-model="form.stage"><option value="idea">Idea</option><option value="prototype">Prototype</option><option value="early">Early product</option><option value="public-beta">Public beta</option><option value="launched">Launched</option></select></label>
         <label class="wide"><span>Plain-language description</span><textarea v-model="form.description" required></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.description.confidence)" size="small">{{ brief.description.confidence }}%</osx-badge>{{ sourcesFor(brief.description) }}</small></label>
-        <label class="wide" :class="{ 'needs-review': brief.audience.needsReview }"><span>Primary audience {{ brief.audience.needsReview ? '· confirm this' : '' }}</span><textarea v-model="form.audience" rows="3" required></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.audience.confidence)" size="small">{{ brief.audience.confidence }}%</osx-badge>{{ sourcesFor(brief.audience) }}</small></label>
-        <label class="wide"><span>Positioning hypothesis · confirm this</span><textarea v-model="form.positioning"></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.positioning.confidence)" size="small">{{ brief.positioning.confidence }}%</osx-badge>{{ sourcesFor(brief.positioning) }}</small></label>
+        <label class="wide" :class="{ 'needs-review': brief.audience.needsReview }"><span>Primary audience {{ brief.audience.needsReview ? '(check this)' : '' }}</span><textarea v-model="form.audience" rows="3" required></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.audience.confidence)" size="small">{{ brief.audience.confidence }}%</osx-badge>{{ sourcesFor(brief.audience) }}</small></label>
+        <label class="wide"><span>How you explain the product (check this)</span><textarea v-model="form.positioning"></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.positioning.confidence)" size="small">{{ brief.positioning.confidence }}%</osx-badge>{{ sourcesFor(brief.positioning) }}</small></label>
       </div>
-      <section class="analysis-provenance"><strong>Evidence used</strong><div><osx-badge v-for="item in brief.evidenceClasses" :key="item.classification">{{ item.count }} {{ item.classification }}</osx-badge></div><span>{{ brief.sourceCount }} source{{ brief.sourceCount === 1 ? "" : "s" }} · confidence is derived from coverage, not model certainty</span></section>
+      <section class="analysis-provenance"><strong>Sources used</strong><div><osx-badge v-for="item in brief.evidenceClasses" :key="item.classification">{{ item.count }} {{ item.classification }}</osx-badge></div><span>{{ brief.sourceCount }} source{{ brief.sourceCount === 1 ? "" : "s" }} · the score measures source coverage, not AI certainty</span></section>
       <footer><osx-button icon="chevron-left" @click="step = 1">Change sources</osx-button><osx-button variant="primary" icon="chevron-right" :disabled="!briefReady" @click="step = 3">Choose the objective</osx-button></footer>
     </section>
 
     <section v-else-if="brief" class="onboarding-panel review-panel">
-      <div class="panel-heading"><div><p class="eyebrow">03 · GOAL & APPROVAL</p><h2>What must distribution accomplish next?</h2></div><osx-badge tone="warning">Founder decision</osx-badge></div>
+      <div class="panel-heading"><div><p class="eyebrow">03 · GOAL AND APPROVAL</p><h2>What should distribution achieve next?</h2></div><osx-badge tone="warning">Your decision</osx-badge></div>
       <div class="objective-grid">
         <button v-for="objective in brief.suggestedObjectives" :key="objective" :class="{ active: !customObjective && form.objective === objective }" @click="chooseObjective(objective)"><osx-icon name="target" :size="20"></osx-icon><span>{{ objective }}</span><osx-icon v-if="!customObjective && form.objective === objective" name="check" :size="17"></osx-icon></button>
         <button :class="{ active: customObjective }" @click="chooseCustomObjective"><osx-icon name="edit" :size="20"></osx-icon><span>Write a different objective</span><osx-icon v-if="customObjective" name="check" :size="17"></osx-icon></button>
       </div>
       <label v-if="customObjective" class="custom-objective"><span>Custom objective</span><input v-model="form.objective" autofocus placeholder="A measurable outcome for the next distribution cycle" /></label>
       <div class="truth-grid">
-        <article><osx-icon name="edit" :size="22"></osx-icon><div><strong>Intent</strong><p>Documents and pasted context establish what you mean to build—not what has shipped.</p></div></article>
-        <article><osx-icon name="globe" :size="22"></osx-icon><div><strong>Public claim</strong><p>Web pages establish what customers are being promised—not whether the behavior works.</p></div></article>
-        <article><osx-icon name="code" :size="22"></osx-icon><div><strong>Implementation</strong><p>Repositories can support capability claims, but cannot prove demand or customer value.</p></div></article>
+        <article><osx-icon name="edit" :size="22"></osx-icon><div><strong>Intent</strong><p>Documents and pasted notes show what you plan to build. They do not prove what has shipped.</p></div></article>
+        <article><osx-icon name="globe" :size="22"></osx-icon><div><strong>Public claim</strong><p>Web pages show what you promise customers. They do not prove that the product works.</p></div></article>
+        <article><osx-icon name="code" :size="22"></osx-icon><div><strong>Implementation</strong><p>Repositories can support feature claims. They cannot prove demand or customer value.</p></div></article>
       </div>
       <dl class="brief-review"><div><dt>Product</dt><dd>{{ form.name }} · {{ form.stage }}</dd></div><div><dt>Audience</dt><dd>{{ form.audience }}</dd></div><div><dt>Objective</dt><dd>{{ form.objective }}</dd></div><div><dt>Sources</dt><dd>{{ brief.sourceCount }} source{{ brief.sourceCount === 1 ? "" : "s" }} · {{ brief.overallConfidence }}% initial confidence</dd></div></dl>
-      <osx-alert tone="info" title="What happens next">Distribution-OS creates one founder-reviewable narrative grounded only in these sources. It does not publish or connect a channel.</osx-alert>
-      <footer><osx-button icon="chevron-left" :disabled="busy" @click="step = 2">Review the brief</osx-button><osx-button variant="primary" icon="check" :loading="busy" :disabled="!form.objective.trim()" @click="submit">Approve product memory</osx-button></footer>
+      <osx-alert tone="info" title="What happens next">Distribution OS uses this brief to suggest useful work. It does not publish or connect a channel.</osx-alert>
+      <footer><osx-button icon="chevron-left" :disabled="busy" @click="step = 2">Review the brief</osx-button><osx-button variant="primary" icon="check" :loading="busy" :disabled="!form.objective.trim()" @click="submit">Approve project brief</osx-button></footer>
     </section>
   </main>
 </template>

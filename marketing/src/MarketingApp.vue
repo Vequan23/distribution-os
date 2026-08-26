@@ -1,16 +1,16 @@
 <script setup lang="ts">
 const loopSteps = [
-  { id: "truth", title: "Build product memory", detail: "Separate founder intent, public claims, and implementation evidence.", state: "done" },
-  { id: "signal", title: "Review a real signal", detail: "Nothing becomes audience evidence until you accept it.", state: "done" },
-  { id: "move", title: "Prepare one useful move", detail: "The harness reads evidence, policy, and prior outcomes before drafting.", state: "active" },
-  { id: "learn", title: "Record what happened", detail: "Outcomes change the next plan instead of disappearing into analytics.", state: "pending" },
+  { id: "truth", title: "Add a project brief", detail: "Cite the sources that explain what you built.", state: "done" },
+  { id: "signal", title: "Review a real signal", detail: "Choose which audience observations can inform a plan.", state: "done" },
+  { id: "move", title: "Review one recommendation", detail: "Check its sources, channel, and draft before approval.", state: "active" },
+  { id: "learn", title: "Save the result", detail: "Use what happened to improve the next plan.", state: "pending" },
 ];
 
 const systemLayers = [
-  { icon: "book", number: "01", title: "Ground", copy: "Onboard a repository, URL, document, or product brief. Distribution OS cites the product truth it is allowed to use." },
-  { icon: "search", number: "02", title: "Sense", copy: "Bring in bounded observations from real places. Every signal stays quarantined until a human reviews it." },
-  { icon: "sparkle", number: "03", title: "Decide", copy: "Generate a small ranked queue—not an infinite content calendar. Every move explains why it deserves attention." },
-  { icon: "activity", number: "04", title: "Learn", copy: "Approve, skip, execute, and record the result. The next cycle inherits evidence instead of repeating guesses." },
+  { icon: "book", number: "01", title: "Add your project", copy: "Start with a repository, URL, document, or pasted notes. Distribution OS cites the sources behind your project brief." },
+  { icon: "search", number: "02", title: "Review signals", copy: "Import public observations from GitHub or DEV. Nothing affects a plan until you accept it." },
+  { icon: "sparkle", number: "03", title: "Review recommendations", copy: "Get a short list of useful actions. Each one includes its sources, channel, reason, and editable draft." },
+  { icon: "activity", number: "04", title: "Save results", copy: "Approve, publish, and record what happened. Distribution OS uses those results in the next plan." },
 ];
 
 const ecosystem = [
@@ -37,11 +37,11 @@ function openSource(): void {
     <header class="site-nav">
       <a class="brand" href="#top" aria-label="Distribution OS home">
         <span class="brand-mark">D</span>
-        <span><strong>Distribution OS</strong><small>Evidence → attention → learning</small></span>
+        <span><strong>Distribution OS</strong><small>Sources → recommendations → results</small></span>
       </a>
       <nav aria-label="Primary navigation">
-        <a href="#system">System</a>
-        <a href="#principles">Principles</a>
+        <a href="#system">How it works</a>
+        <a href="#principles">Why it works</a>
         <a href="#ecosystem">Ecosystem</a>
         <osx-button size="small" icon="terminal" @click="openWorkspace">Get started</osx-button>
       </nav>
@@ -50,61 +50,61 @@ function openSource(): void {
     <main id="top">
       <section class="hero section-shell" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <osx-badge tone="success" dot>LOCAL-FIRST · HUMAN-GOVERNED</osx-badge>
-          <p class="eyebrow">THE DISTRIBUTION CONTROL PLANE</p>
-          <osx-heading id="hero-title" :level="1" variant="display">Turn product truth into attention that compounds.</osx-heading>
+          <osx-badge tone="success" dot>OPEN SOURCE · RUNS LOCALLY</osx-badge>
+          <p class="eyebrow">DISTRIBUTION FOR TECHNICAL FOUNDERS</p>
+          <osx-heading id="hero-title" :level="1" variant="display">Find distribution work worth doing.</osx-heading>
           <osx-copy size="large" tone="muted" measure="wide">
-            Distribution OS gives technical founders a repeatable way to find useful conversations, prepare evidence-grounded contributions, and learn what earns trust—without automating their identity.
+            Distribution OS reads your project sources, real audience signals, and past results. It recommends a few useful actions, drafts the work, and waits for your approval.
           </osx-copy>
           <div class="hero-actions">
-            <osx-button variant="primary" icon="play" @click="scrollToId('system')">See the operating loop</osx-button>
+            <osx-button variant="primary" icon="play" @click="scrollToId('system')">See how it works</osx-button>
             <osx-button icon="git-branch" @click="openSource">View source</osx-button>
           </div>
           <ul class="trust-line" aria-label="Product principles">
-            <li><osx-icon name="lock" :size="15"></osx-icon>Private product memory</li>
-            <li><osx-icon name="user" :size="15"></osx-icon>Human approval</li>
-            <li><osx-icon name="boxes" :size="15"></osx-icon>Model agnostic</li>
+            <li><osx-icon name="lock" :size="15"></osx-icon>Local project data</li>
+            <li><osx-icon name="user" :size="15"></osx-icon>You approve public work</li>
+            <li><osx-icon name="boxes" :size="15"></osx-icon>Use your model or coding agent</li>
           </ul>
         </div>
 
         <div class="hero-product" aria-label="Distribution OS product preview">
           <div class="signal-orbit orbit-one"></div>
           <div class="signal-orbit orbit-two"></div>
-          <osx-window title="Distribution OS" subtitle="Evidence loop · Aperta" :closeable="false" :minimizable="false" :zoomable="false">
+          <osx-window title="Distribution OS" subtitle="Aperta · Review" :closeable="false" :minimizable="false" :zoomable="false">
             <div class="preview-toolbar">
-              <span><osx-icon name="activity" :size="17"></osx-icon>Today’s controlled loop</span>
+              <span><osx-icon name="activity" :size="17"></osx-icon>Today’s recommendations</span>
               <osx-badge tone="success" dot>READY</osx-badge>
             </div>
             <div class="preview-body">
-              <osx-agent-run-status phase="working" label="Preparing one contribution" detail="Reading product memory, accepted signals, and channel policy"></osx-agent-run-status>
+              <osx-agent-run-status phase="working" label="Preparing one recommendation" detail="Reading the project brief, accepted signals, and channel rules"></osx-agent-run-status>
               <section class="mobile-run-summary" aria-label="Preparing one contribution, step 2 of 4">
                 <header><span>WORK IN PROGRESS</span><b>2 of 4</b></header>
-                <strong>Preparing one contribution</strong>
-                <p>Reading accepted product and audience evidence.</p>
+                <strong>Preparing one recommendation</strong>
+                <p>Reading project sources and accepted signals.</p>
                 <div class="mobile-run-progress" aria-hidden="true"><i></i></div>
               </section>
-              <osx-plan title="Evidence before action" :steps="loopSteps" :show-progress="true" compact></osx-plan>
+              <osx-plan title="Sources before action" :steps="loopSteps" :show-progress="true" compact></osx-plan>
               <div class="preview-evidence">
-                <span><osx-icon name="file-text" :size="16"></osx-icon><strong>3 cited facts</strong><small>product evidence</small></span>
-                <span><osx-icon name="inbox" :size="16"></osx-icon><strong>1 accepted signal</strong><small>human reviewed</small></span>
-                <span><osx-icon name="lock" :size="16"></osx-icon><strong>Approval required</strong><small>before identity use</small></span>
+                <span><osx-icon name="file-text" :size="16"></osx-icon><strong>3 cited facts</strong><small>project sources</small></span>
+                <span><osx-icon name="inbox" :size="16"></osx-icon><strong>1 accepted signal</strong><small>reviewed by you</small></span>
+                <span><osx-icon name="lock" :size="16"></osx-icon><strong>Approval required</strong><small>before publishing</small></span>
               </div>
             </div>
-            <osx-status-bar slot="footer" label="Local ledger ready" status="ready" detail="No public action taken"></osx-status-bar>
+            <osx-status-bar slot="footer" label="Local data ready" status="ready" detail="Nothing published"></osx-status-bar>
           </osx-window>
         </div>
       </section>
 
       <section class="promise-strip" aria-label="Distribution OS positioning">
-        <div><strong>Not more content.</strong><span>Fewer, better contributions.</span></div>
-        <div><strong>Not autonomous spam.</strong><span>Bounded preparation and explicit approval.</span></div>
-        <div><strong>Not vanity analytics.</strong><span>Evidence, decisions, and outcomes in one loop.</span></div>
+        <div><strong>Skip the content treadmill.</strong><span>Make fewer, more useful contributions.</span></div>
+        <div><strong>Keep your identity.</strong><span>Review every draft before it reaches a public channel.</span></div>
+        <div><strong>Learn from results.</strong><span>Use replies, visits, signups, or revenue in the next plan.</span></div>
       </section>
 
       <section id="system" class="system-section section-shell">
         <header class="section-heading">
-          <div><p class="eyebrow">THE SYSTEM</p><osx-heading :level="2" variant="title">Distribution becomes a practice you can inspect.</osx-heading></div>
-          <osx-copy tone="muted" measure="default">Every cycle begins with product truth and ends with a recorded outcome. The harness can help with the middle; it cannot quietly skip the human judgment.</osx-copy>
+          <div><p class="eyebrow">HOW IT WORKS</p><osx-heading :level="2" variant="title">Start with sources. End with a result.</osx-heading></div>
+          <osx-copy tone="muted" measure="default">Each run follows the same four steps. AI can research and draft, but it cannot skip your review or publish on its own.</osx-copy>
         </header>
         <div class="system-grid">
           <article v-for="layer in systemLayers" :key="layer.number">
@@ -118,23 +118,23 @@ function openSource(): void {
 
       <section class="evidence-section section-shell">
         <div class="evidence-copy">
-          <p class="eyebrow">A DIFFERENT HARNESS</p>
-          <osx-heading :level="2" variant="title">The model proposes. The system proves.</osx-heading>
-          <osx-copy size="large" tone="muted" measure="default">Distribution OS owns the memory, tools, policy, citations, approvals, and outcomes. Models and agent runtimes supply inference—not authority.</osx-copy>
+          <p class="eyebrow">WHY YOU CAN CHECK IT</p>
+          <osx-heading :level="2" variant="title">AI suggests. You verify.</osx-heading>
+          <osx-copy size="large" tone="muted" measure="default">Distribution OS controls the sources, tools, citations, approvals, and results. Your model or coding agent handles the AI work.</osx-copy>
           <div class="boundary-list">
-            <div><osx-icon name="check" :size="18"></osx-icon><span><strong>Exact evidence citations</strong><small>Every recommended move points back to product or audience evidence.</small></span></div>
-            <div><osx-icon name="check" :size="18"></osx-icon><span><strong>Portable agent execution</strong><small>Use the native loop or bounded Claude Code, Cursor, OpenCode, and Codex runtimes.</small></span></div>
-            <div><osx-icon name="check" :size="18"></osx-icon><span><strong>Hard approval boundaries</strong><small>Public identity and sensitive claims stay with the person responsible for them.</small></span></div>
+            <div><osx-icon name="check" :size="18"></osx-icon><span><strong>Exact source citations</strong><small>Every recommendation links back to project sources or an accepted audience signal.</small></span></div>
+            <div><osx-icon name="check" :size="18"></osx-icon><span><strong>Your choice of AI</strong><small>Use a model API, Claude Code, Cursor, OpenCode, or Codex.</small></span></div>
+            <div><osx-icon name="check" :size="18"></osx-icon><span><strong>Approval before publishing</strong><small>You review the exact draft before it reaches a public channel.</small></span></div>
           </div>
         </div>
-        <osx-window class="policy-window" title="Automation Policy" subtitle="Kernel enforced" :closeable="false" :minimizable="false" :zoomable="false">
+        <osx-window class="policy-window" title="Automation Rules" subtitle="Always enforced" :closeable="false" :minimizable="false" :zoomable="false">
           <div class="policy-content">
-            <osx-alert tone="info" title="Contribution before promotion">The system optimizes for usefulness in places your audience already gathers.</osx-alert>
+            <osx-alert tone="info" title="Help before you promote">Look for places where your product knowledge can answer a real question.</osx-alert>
             <dl>
-              <div><dt>Research & preparation</dt><dd><osx-badge tone="success" dot>AUTOMATABLE</osx-badge></dd></div>
-              <div><dt>Draft generation</dt><dd><osx-badge tone="success" dot>AUTOMATABLE</osx-badge></dd></div>
-              <div><dt>New public claims</dt><dd><osx-badge tone="warning" dot>REVIEW</osx-badge></dd></div>
-              <div><dt>Identity-bearing action</dt><dd><osx-badge tone="danger" dot>APPROVAL</osx-badge></dd></div>
+              <div><dt>Read connected sources</dt><dd><osx-badge tone="success" dot>AUTOMATIC</osx-badge></dd></div>
+              <div><dt>Prepare recommendations</dt><dd><osx-badge tone="success" dot>AUTOMATIC</osx-badge></dd></div>
+              <div><dt>Write a new public claim</dt><dd><osx-badge tone="warning" dot>REVIEW</osx-badge></dd></div>
+              <div><dt>Publish as you</dt><dd><osx-badge tone="danger" dot>APPROVAL</osx-badge></dd></div>
             </dl>
           </div>
         </osx-window>
@@ -142,13 +142,13 @@ function openSource(): void {
 
       <section id="principles" class="principles-section section-shell">
         <header class="section-heading compact-heading">
-          <div><p class="eyebrow">BUILT FOR THE FOUNDER WHO WOULD RATHER BUILD</p><osx-heading :level="2" variant="title">No growth persona required.</osx-heading></div>
+          <div><p class="eyebrow">WHY IT WORKS</p><osx-heading :level="2" variant="title">Distribution without pretending to be a marketer.</osx-heading></div>
         </header>
         <div class="principle-grid">
-          <article><span>01</span><h3>Useful beats loud.</h3><p>Find the conversations where your product knowledge can help before asking anyone to care.</p></article>
-          <article><span>02</span><h3>Truth before tactics.</h3><p>A source-cited product memory prevents distribution from drifting into generic positioning sludge.</p></article>
-          <article><span>03</span><h3>Rhythm beats launch day.</h3><p>A small evidence loop makes distribution durable enough to survive the weeks when attention is quiet.</p></article>
-          <article><span>04</span><h3>Outcomes beat impressions.</h3><p>Record what created qualified conversations, activated users, or durable owned assets—and change the next move.</p></article>
+          <article><span>01</span><h3>Help before you promote.</h3><p>Find questions your product knowledge can answer before asking anyone to try the product.</p></article>
+          <article><span>02</span><h3>Cite before you claim.</h3><p>Use repositories, docs, public pages, and accepted signals to support each recommendation.</p></article>
+          <article><span>03</span><h3>Keep the plan small.</h3><p>Review a few useful actions instead of filling an endless content calendar.</p></article>
+          <article><span>04</span><h3>Use results next time.</h3><p>Record replies, visits, signups, or revenue. The next plan reads those results.</p></article>
         </div>
       </section>
 
@@ -156,9 +156,9 @@ function openSource(): void {
         <header class="ecosystem-heading">
           <div>
             <span class="osx-provenance"><span class="provenance-mark">O</span>Interface built with <strong>OSX Components</strong></span>
-            <osx-heading :level="2" variant="title">One ecosystem for building with more ownership.</osx-heading>
+            <osx-heading :level="2" variant="title">Tools that keep you in control.</osx-heading>
           </div>
-          <osx-copy tone="muted" measure="default">Distribution OS is part of a growing set of independent tools for understanding, shipping, and earning attention—without giving up your judgment.</osx-copy>
+          <osx-copy tone="muted" measure="default">Distribution OS works alongside independent tools for understanding code, building interfaces, and sharing what you learn.</osx-copy>
         </header>
         <div class="ecosystem-grid">
           <osx-ecosystem-card
@@ -178,9 +178,9 @@ function openSource(): void {
 
       <section class="closing-section section-shell">
         <div>
-          <p class="eyebrow">BUILDING IS CHEAP. TRUST IS NOT.</p>
-          <osx-heading :level="2" variant="display">Make every distribution move earn its place.</osx-heading>
-          <osx-copy size="large" tone="muted" measure="default">Start locally. Bring your own model or agent runtime. Keep the final judgment.</osx-copy>
+          <p class="eyebrow">START WITH ONE PROJECT</p>
+          <osx-heading :level="2" variant="display">Find one useful action.</osx-heading>
+          <osx-copy size="large" tone="muted" measure="default">Run it locally. Use your model or coding agent. Approve every public draft.</osx-copy>
         </div>
         <div class="closing-actions">
           <osx-button variant="primary" icon="terminal" @click="openWorkspace">Start locally</osx-button>
@@ -190,7 +190,7 @@ function openSource(): void {
     </main>
 
     <footer class="site-footer">
-      <span><strong>Distribution OS</strong> · Local-first distribution infrastructure</span>
+      <span><strong>Distribution OS</strong> · Open-source distribution for technical founders</span>
       <span>Built with <a href="https://osx-components.vercel.app/" target="_blank" rel="noreferrer">OSX Components</a></span>
     </footer>
   </div>
