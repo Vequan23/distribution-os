@@ -1,4 +1,4 @@
-import type { AIControlPlane, AutomationPlaybook, AutomationRun, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft, SourceConnector } from "../server/domain.ts";
+import type { AgentRuntimeId, AIControlPlane, AutomationPlaybook, AutomationRun, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft, RuntimeTestResult, SourceConnector } from "../server/domain.ts";
 import type { ActionAdapterDescriptor, ActionCapability, ActionDecision, ActionExecutionRecord, ActionTransport } from "../packages/action-fabric/src/index.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -32,6 +32,10 @@ export function createAutomationPlaybook(input: { productId: string; name?: stri
 
 export function updateAutomationPlaybook(id: string, input: { enabled: boolean; intervalMinutes: number; maxActionsPerRun: number }): Promise<{ playbook: AutomationPlaybook; dashboard: DashboardState }> {
   return request<{ playbook: AutomationPlaybook; dashboard: DashboardState }>(`/api/automation/playbooks/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+export function deleteAutomationPlaybook(id: string): Promise<{ dashboard: DashboardState }> {
+  return request<{ dashboard: DashboardState }>(`/api/automation/playbooks/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function runAutomationPlaybook(id: string): Promise<{ run: AutomationRun; dashboard: DashboardState }> {
@@ -120,11 +124,19 @@ export function activateAgentRuntime(runtimeId: string, model = ""): Promise<AIC
   return request<AIControlPlane>("/api/ai/runtime", { method: "POST", body: JSON.stringify({ runtimeId, model }) });
 }
 
+export function testAgentRuntime(runtimeId: AgentRuntimeId, model = ""): Promise<RuntimeTestResult> {
+  return request<RuntimeTestResult>(`/api/ai/runtimes/${encodeURIComponent(runtimeId)}/test`, { method: "POST", body: JSON.stringify({ model }) });
+}
+
 export function onboardProduct(input: OnboardProductInput): Promise<{ productId: string; operation: "created" | "updated"; dashboard: DashboardState }> {
   return request<{ productId: string; operation: "created" | "updated"; dashboard: DashboardState }>("/api/products/onboard", {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function deleteProduct(id: string): Promise<{ dashboard: DashboardState }> {
+  return request<{ dashboard: DashboardState }>(`/api/products/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function analyzeProduct(sources: OnboardingSourceInput[]): Promise<{ brief: ProductBriefDraft }> {
@@ -175,6 +187,21 @@ export function connectGitHubSource(productId: string, repository: string): Prom
     method: "POST",
     body: JSON.stringify({ productId, repository }),
   });
+}
+
+export function saveDevToCredential(apiKey: string): Promise<DashboardState> {
+  return request<DashboardState>("/api/connectors/devto/credential", { method: "POST", body: JSON.stringify({ apiKey }) });
+}
+
+export function connectDevTo(productId: string, signalQuery: string, publishTags: string[]): Promise<{ imported: number; dashboard: DashboardState }> {
+  return request<{ imported: number; dashboard: DashboardState }>("/api/connectors/devto", {
+    method: "POST",
+    body: JSON.stringify({ productId, signalQuery, publishTags }),
+  });
+}
+
+export function executeOpportunity(id: string): Promise<{ receipt: { externalId: string; externalUrl: string }; dashboard: DashboardState }> {
+  return request<{ receipt: { externalId: string; externalUrl: string }; dashboard: DashboardState }>(`/api/opportunities/${encodeURIComponent(id)}/execute`, { method: "POST", body: "{}" });
 }
 
 export function syncSourceConnector(id: string): Promise<{ connector: SourceConnector; importedCount: number; inspectedCount: number; dashboard: DashboardState }> {

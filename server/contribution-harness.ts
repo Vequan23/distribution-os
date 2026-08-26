@@ -1,9 +1,9 @@
-import { isStepCount, Output, tool, ToolLoopAgent } from "ai";
 import { z } from "zod";
 import type { DistributionDatabase } from "./database.ts";
 import type { ContributionDraftResult } from "./domain.ts";
 import type { NativeModelExecutor } from "./model-executor.ts";
 import { safeHarnessFailure } from "./safe-errors.ts";
+import { runGovernedAgentWithVraxis } from "./vraxis-agent-runtime.ts";
 
 export const contributionDraftSchema = z.object({
   draftCopy: z.string().min(20).max(4_000),
@@ -79,9 +79,7 @@ export async function writeContributionDraft(
     return fallback;
   }
 
-  const agent = new ToolLoopAgent({
-    model: active.languageModel,
-    instructions: [
+  const instructions = [
       "You are the governed Distribution-OS contribution writer.",
       "Read the approved opportunity and supporting evidence before writing.",
       "Write one complete, channel-native draft—not a strategy memo or list of alternatives.",
@@ -90,11 +88,11 @@ export async function writeContributionDraft(
       "Use only factual claims supported by evidence returned from readSupportingEvidence.",
       "Cite exact evidence titles in citationLabels. Citations are stored as proof metadata and should not be inserted into the public draft unless naturally useful.",
       "End with a proportionate call to action. A genuine question is preferable to a forced product pitch.",
-    ].join(" "),
-    tools: {
-      readOpportunity: tool({
+    ].join(" ");
+  const tools = [
+      {
+        name: "readOpportunity",
         description: "Read the selected contribution strategy, intended audience, channel, and current editable draft.",
-        inputSchema: z.object({}),
         execute: async () => ({
           product: context.product,
           channel: context.channel,
@@ -107,33 +105,37 @@ export async function writeContributionDraft(
             currentDraft: context.opportunity.draftCopy,
           },
         }),
-      }),
-      readSupportingEvidence: tool({
+      },
+      {
+        name: "readSupportingEvidence",
         description: "Read the exact evidence titles and summaries that may support factual claims in the public draft.",
-        inputSchema: z.object({}),
         execute: async () => context.evidence.map((item) => ({
           title: item.title,
           summary: item.summary,
           classification: item.classification,
           confidence: item.confidence,
         })),
-      }),
-    },
-    output: Output.object({ schema: contributionDraftSchema }),
-    stopWhen: isStepCount(6),
-    prepareStep: ({ stepNumber }) => {
-      const toolName = REQUIRED_DRAFT_TOOLS[stepNumber];
-      return toolName
-        ? { activeTools: [toolName], toolChoice: { type: "tool" as const, toolName } }
-        : { toolChoice: "none" as const };
-    },
-  });
+      },
+    ] as const;
 
   try {
-    const result = await agent.generate({
+    const result = await runGovernedAgentWithVraxis({
+      agentId: "distribution-os-contribution-writer",
+      agentName: "Distribution OS contribution writer",
+      model: active.languageModel,
+      provider: active.provider,
+      modelId: active.model,
+      projectId: context.product.id,
+      runId,
+      instructions,
       prompt: `Write the reviewable ${context.channel.name} contribution for opportunity ${opportunityId}. Nothing will be published automatically.`,
+      schema: contributionDraftSchema,
+      tools,
+      requiredSequence: REQUIRED_DRAFT_TOOLS,
+      maxSteps: 6,
+      metadata: { operation: "contribution-draft", opportunityId },
     });
-    const missingTools = missingRequiredDraftTools(result.toolCalls.map((call) => call.toolName));
+    const missingTools = missingRequiredDraftTools(result.toolAudit.observedSequence);
     if (missingTools.length) throw new Error(`Required contribution tools were not called: ${missingTools.join(", ")}`);
     const evidenceLabels = new Set(context.evidence.map((item) => item.title));
     const productLabels = new Set(context.evidence.filter((item) => item.classification !== "audience-signal").map((item) => item.title));
@@ -145,13 +147,11 @@ export async function writeContributionDraft(
     database.finishHarnessStep(
       draftStep,
       "completed",
-      `The writer completed ${result.steps.length} model step${result.steps.length === 1 ? "" : "s"} and cited ${citationLabels.length} evidence item${citationLabels.length === 1 ? "" : "s"}.`,
+      `Vraxis completed ${result.steps} model step${result.steps === 1 ? "" : "s"} via ${result.provenance.adapterStrategy} and cited ${citationLabels.length} evidence item${citationLabels.length === 1 ? "" : "s"}.`,
     );
-    result.steps.forEach((step, index) => {
-      const toolNames = [...new Set(step.toolCalls.map((call) => call.toolName))];
-      if (!toolNames.length) return;
-      const id = database.beginHarnessStep(runId, index + 2, `Tool output: ${toolNames.join(", ")}`, `${step.toolResults.length} result${step.toolResults.length === 1 ? "" : "s"} returned to the writer.`);
-      database.finishHarnessStep(id, "completed", `${toolNames.join(", ")} output was chained into the next model step.`);
+    result.toolAudit.calls.forEach((call, index) => {
+      const id = database.beginHarnessStep(runId, index + 2, `Tool output: ${call.toolName}`, `Vraxis audit recorded step ${call.step}, tool version ${call.toolVersion}, and ${call.durationMs}ms execution without persisting tool payloads.`);
+      database.finishHarnessStep(id, call.status, `${call.toolName} completed under the required evidence-read sequence.`);
     });
     database.finishHarnessRun(runId, "completed", `A cited ${context.channel.name} contribution draft is ready for human review.`);
     return {
@@ -176,13 +176,16 @@ export async function writeContributionDraft(
           schema: contributionDraftSchema,
           instructions: "Write one complete, channel-native contribution using only the supplied opportunity and evidence. Return exact evidence titles in citationLabels. Avoid hype, fabricated experience, unsupported metrics, and fake urgency.",
           prompt: JSON.stringify({ product: context.product, channel: context.channel, opportunity: context.opportunity, evidence: context.evidence }),
+          projectId: context.product.id,
+          runId,
+          metadata: { operation: "contribution-draft-repair", opportunityId },
         });
         const evidenceLabels = new Set(context.evidence.map((item) => item.title));
         const productLabels = new Set(context.evidence.filter((item) => item.classification !== "audience-signal").map((item) => item.title));
         const citationLabels = [...new Set(repaired.output.citationLabels.filter((label) => evidenceLabels.has(label)))];
         if (!citationLabels.some((label) => productLabels.has(label))) throw new Error("The repaired contribution did not cite supporting product evidence.");
         database.updateOpportunityDraft(opportunityId, repaired.output.draftCopy);
-        database.finishHarnessStep(repairStep, "completed", `${repaired.provider}/${repaired.model} repaired the contribution contract after ${repaired.attempts} structured attempt${repaired.attempts === 1 ? "" : "s"}.`);
+        database.finishHarnessStep(repairStep, "completed", `${repaired.provider}/${repaired.model} repaired the contribution contract via ${repaired.provenance?.adapterStrategy || "the native structured adapter"} after ${repaired.attempts} structured attempt${repaired.attempts === 1 ? "" : "s"}.`);
         database.finishHarnessRun(runId, "completed", `A cited ${context.channel.name} contribution draft is ready after structured repair.`);
         return { runId, opportunityId, ...repaired.output, citationLabels, mode: "ai", provider: repaired.provider, model: repaired.model, warning: "" };
       } catch (repairError) {

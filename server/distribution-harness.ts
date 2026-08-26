@@ -1,4 +1,3 @@
-import { isStepCount, Output, tool, ToolLoopAgent } from "ai";
 import { z } from "zod";
 import type { DistributionDatabase } from "./database.ts";
 import type { DistributionPlan, DistributionPlanMove, PlanApplication } from "./domain.ts";
@@ -6,6 +5,7 @@ import type { AIControlPlaneStore } from "./ai-control-plane.ts";
 import type { NativeModelExecutor } from "./model-executor.ts";
 import type { AgentRuntimeExecutor } from "./runtime-executor.ts";
 import { safeHarnessFailure } from "./safe-errors.ts";
+import { runGovernedAgentWithVraxis } from "./vraxis-agent-runtime.ts";
 
 export const planSchema = z.object({
   summary: z.string().min(20).max(700),
@@ -146,9 +146,7 @@ export async function generateDistributionPlan(
     return { plan: fallback, application };
   }
 
-  const agent = new ToolLoopAgent({
-    model: active.languageModel,
-    instructions: [
+  const instructions = [
       "You are the governed Distribution-OS planning agent.",
       "Use the available read-only tools before producing a plan.",
       `Return at most ${maxMoves} high-leverage moves. Contribution and useful learning beat reach.`,
@@ -156,62 +154,63 @@ export async function generateDistributionPlan(
       "Every move must cite at least one exact product evidence title returned by readProductEvidence. Claims based on audience observations may additionally cite exact labels from readAudienceSignals.",
       "Respect channel policy. Public execution always remains a separate human approval step.",
       "Drafts should sound direct and human, avoid hype, and expose uncertainty honestly.",
-    ].join(" "),
-    tools: {
-      readProductMemory: tool({
+    ].join(" ");
+  const tools = [
+      {
+        name: "readProductMemory",
         description: "Read the founder-approved product brief and current distribution objective.",
-        inputSchema: z.object({}),
         execute: async () => context.product,
-      }),
-      readProductEvidence: tool({
+      },
+      {
+        name: "readProductEvidence",
         description: "Read bounded evidence labels and summaries. These are the only valid factual sources for claims.",
-        inputSchema: z.object({}),
         execute: async () => productEvidence.map((item) => ({ title: item.title, summary: item.summary, classification: item.classification, confidence: item.confidence })),
-      }),
-      readAudienceSignals: tool({
+      },
+      {
+        name: "readAudienceSignals",
         description: "Read founder-supplied public URLs or discussion excerpts. These are bounded observations, not proof of demand or a live trend feed.",
-        inputSchema: z.object({}),
         execute: async () => audienceSignals.map((item) => ({ title: item.title, summary: item.summary, sourceUrl: item.sourceUrl, confidence: item.confidence })),
-      }),
-      readChannelPolicies: tool({
+      },
+      {
+        name: "readChannelPolicies",
         description: "Read configured channel modes, connection state, and daily limits.",
-        inputSchema: z.object({}),
         execute: async () => context.channels.map((item) => ({ id: item.id, name: item.name, mode: item.mode, status: item.status, connected: item.connected, dailyLimit: item.dailyLimit })),
-      }),
-      readOutcomeMemory: tool({
+      },
+      {
+        name: "readOutcomeMemory",
         description: "Read measured outcomes from prior approved moves so the next plan can learn instead of repeating blindly.",
-        inputSchema: z.object({}),
         execute: async () => database.getOutcomeMemory(productId),
-      }),
-    },
-    output: Output.object({ schema: planSchema }),
-    stopWhen: isStepCount(10),
-    prepareStep: ({ stepNumber }) => {
-      const toolName = REQUIRED_PLANNING_TOOLS[stepNumber];
-      return toolName
-        ? { activeTools: [toolName], toolChoice: { type: "tool" as const, toolName } }
-        : { toolChoice: "none" as const };
-    },
-  });
+      },
+    ] as const;
 
   try {
     if (options.signal?.aborted) throw new DOMException("The planning run was cancelled.", "AbortError");
-    const result = await agent.generate({
+    const result = await runGovernedAgentWithVraxis({
+      agentId: "distribution-os-planner",
+      agentName: "Distribution OS planner",
+      model: active.languageModel,
+      provider: active.provider,
+      modelId: active.model,
+      projectId: productId,
+      runId,
+      instructions,
       prompt: `Build the next distribution plan for product ${productId}. Read product memory, evidence, audience signals, channel policies, and outcome memory before deciding.`,
+      schema: planSchema,
+      tools,
+      requiredSequence: REQUIRED_PLANNING_TOOLS,
+      maxSteps: 10,
       abortSignal: options.signal,
+      metadata: { operation: "distribution-plan", productId },
     });
-    const missingTools = missingRequiredPlanningTools(result.toolCalls.map((call) => call.toolName));
+    const missingTools = missingRequiredPlanningTools(result.toolAudit.observedSequence);
     if (missingTools.length) throw new Error(`Required planning tools were not called: ${missingTools.join(", ")}`);
     const moves = sourceCitedMoves(result.output);
     if (!moves.length) throw new Error("The agent did not return any source-cited distribution moves.");
     const plan: DistributionPlan = { runId, productId, summary: result.output.summary, assumptions: result.output.assumptions, moves, mode: "ai", warning: "" };
-    const steps = result.steps as Array<{ toolCalls?: Array<{ toolName?: string }>; toolResults?: unknown[]; text?: string }>;
-    database.finishHarnessStep(planStep, "completed", `Agent completed ${steps.length} model step${steps.length === 1 ? "" : "s"} and returned ${moves.length} cited move${moves.length === 1 ? "" : "s"}.`);
-    steps.forEach((step, index) => {
-      const toolNames = [...new Set((step.toolCalls || []).map((call) => call.toolName || "tool"))];
-      if (!toolNames.length) return;
-      const id = database.beginHarnessStep(runId, index + 2, `Tool output: ${toolNames.join(", ")}`, `${step.toolResults?.length || 0} result${step.toolResults?.length === 1 ? "" : "s"} returned to the next model step.`);
-      database.finishHarnessStep(id, "completed", `${toolNames.join(", ")} output was chained into the agent context.`);
+    database.finishHarnessStep(planStep, "completed", `Vraxis completed ${result.steps} model step${result.steps === 1 ? "" : "s"} via ${result.provenance.adapterStrategy} and returned ${moves.length} cited move${moves.length === 1 ? "" : "s"}.`);
+    result.toolAudit.calls.forEach((call, index) => {
+      const id = database.beginHarnessStep(runId, index + 2, `Tool output: ${call.toolName}`, `Vraxis audit recorded step ${call.step}, tool version ${call.toolVersion}, and ${call.durationMs}ms execution without persisting tool payloads.`);
+      database.finishHarnessStep(id, call.status, `${call.toolName} completed under the required evidence-read sequence.`);
     });
     const application = database.applyDistributionPlan(plan);
     database.finishHarnessRun(runId, "completed", `${application.insertedCount} new cited move${application.insertedCount === 1 ? "" : "s"} added to the review queue.`);
@@ -231,11 +230,14 @@ export async function generateDistributionPlan(
           instructions: "Return one complete distribution plan using only the supplied bounded evidence. Every move must cite an exact product evidence title. Do not invent demand, trends, outcomes, or channel access.",
           prompt: JSON.stringify({ product: context.product, productEvidence, audienceSignals, channels: context.channels, outcomes: database.getOutcomeMemory(productId), maxMoves }),
           signal: options.signal,
+          projectId: productId,
+          runId,
+          metadata: { operation: "distribution-plan-repair", productId },
         });
         const moves = sourceCitedMoves(repaired.output);
         if (!moves.length) throw new Error("The repaired plan did not cite supporting product evidence.");
         const plan: DistributionPlan = { runId, productId, summary: repaired.output.summary, assumptions: repaired.output.assumptions, moves, mode: "ai", warning: "" };
-        database.finishHarnessStep(repairStep, "completed", `${repaired.provider}/${repaired.model} repaired the plan contract after ${repaired.attempts} structured attempt${repaired.attempts === 1 ? "" : "s"}.`);
+        database.finishHarnessStep(repairStep, "completed", `${repaired.provider}/${repaired.model} repaired the plan contract via ${repaired.provenance?.adapterStrategy || "the native structured adapter"} after ${repaired.attempts} structured attempt${repaired.attempts === 1 ? "" : "s"}.`);
         const application = database.applyDistributionPlan(plan);
         database.finishHarnessRun(runId, "completed", `${application.insertedCount} new cited move${application.insertedCount === 1 ? "" : "s"} added after structured repair.`);
         return { plan, application };

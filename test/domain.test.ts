@@ -195,3 +195,51 @@ test("repeat onboarding updates matching product memory without duplicating evid
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("permanent project deletion guards active work and cascades all project-local records", () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-product-delete-"));
+  const database = new DistributionDatabase(directory);
+  try {
+    const productId = database.onboardProduct({
+      name: "Disposable Project", description: "A bounded project created to verify deletion.", stage: "early",
+      audience: "Technical founders", objective: "Verify lifecycle cleanup", positioning: "Evidence can be removed deliberately.", sources: [],
+    }, [{ type: "text", label: "Delete fixture", sourceUrl: "", summary: "A project-specific source.", excerpt: "A project-specific source.", classification: "intent", confidence: 52 }]);
+    const signals = database.addSignalCandidates(productId, [{ type: "text", label: "Project question", sourceUrl: "", summary: "Can project evidence be deleted completely?", excerpt: "Can project evidence be deleted completely?", classification: "intent", confidence: 52 }]);
+    database.decideSignalCandidate(signals.signalIds[0], "accept");
+    database.configureDevToConnection(productId, "project lifecycle", ["productivity"]);
+    const adapter = database.createActionAdapter({ name: "Project handoff", transport: "manual", capabilities: ["execute"] });
+    const action = database.createActionExecution({
+      adapterId: adapter.id, capability: "execute", toolName: "manual_handoff", status: "approval-required",
+      purpose: "Verify that a project-linked action is deleted with its project.", evidenceRefs: [productId], arguments: { productId },
+      decision: { status: "approval-required", reasons: ["Human approval required."], adapterId: adapter.id, capability: "execute", approval: "every-time", publicSideEffect: true, evaluatedAt: new Date().toISOString() },
+      idempotencyKey: "project-delete-action",
+    }).record;
+    const harnessRunId = database.beginHarnessRun({ kind: "distribution-plan", productId, runtimeId: "native" });
+    database.beginHarnessStep(harnessRunId, 1, "Inspect deletion boundary");
+    const playbook = database.createAutomationPlaybook({ productId, intervalMinutes: 60, maxActionsPerRun: 1 });
+    const automationRun = database.beginAutomationRun(playbook.id, "manual", "project-delete-active").run;
+    database.startAutomationRun(automationRun.id);
+
+    assert.throws(() => database.deleteProduct(productId), /active evidence loop run/i);
+    database.finishAutomationRun(automationRun.id, "failed", "Fixture stopped safely.");
+    database.deleteProduct(productId);
+
+    const dashboard = database.getDashboard();
+    assert.equal(dashboard.products.some((item) => item.id === productId), false);
+    assert.equal(dashboard.opportunities.some((item) => item.productId === productId), false);
+    assert.equal(dashboard.signalInbox.some((item) => item.productId === productId), false);
+    assert.equal(dashboard.audienceSignals.some((item) => item.productId === productId), false);
+    assert.equal(dashboard.automation.playbooks.some((item) => item.productId === productId), false);
+    assert.equal(dashboard.automation.runs.some((item) => item.productId === productId), false);
+    assert.throws(() => database.getHarnessRun(harnessRunId), /not found/i);
+    assert.throws(() => database.getAutomationRun(automationRun.id), /not found/i);
+    assert.throws(() => database.getActionExecution(action.id), /not found/i);
+    assert.equal(database.getActionAdapters().some((item) => item.id === adapter.id), true);
+    assert.equal(database.getDevToConnection().productId, "");
+    assert.equal(dashboard.channels.find((item) => item.id === "devto")?.connected, false);
+    assert.equal(dashboard.recentEvents.some((item) => item.entityId === productId || item.detail.includes("Disposable Project")), false);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

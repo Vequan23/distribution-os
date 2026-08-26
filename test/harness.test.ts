@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,8 +10,9 @@ import { missingRequiredDraftTools, writeContributionDraft } from "../server/con
 import { buildProductBrief } from "../server/ingestion.ts";
 import type { NativeModelExecutor } from "../server/model-executor.ts";
 import { synthesizeProductBrief } from "../server/onboarding-harness.ts";
-import { AgentRuntimeExecutor } from "../server/runtime-executor.ts";
+import { AgentRuntimeExecutor, runRuntimeCommand } from "../server/runtime-executor.ts";
 import { AutomationKernel } from "../server/automation-kernel.ts";
+import { DevToConnector } from "../server/devto-connector.ts";
 
 function seedProduct(database: DistributionDatabase): string {
   return database.onboardProduct({
@@ -103,6 +104,47 @@ test("onboarding AI synthesis accepts only exact evidence labels and records its
   }
 });
 
+test("onboarding honors the selected Codex runtime instead of silently using a model API", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-onboarding-runtime-"));
+  const database = new DistributionDatabase(directory);
+  const sources = [{
+    type: "text" as const, label: "Founder brief", sourceUrl: "", summary: "A distribution practice for technical founders.",
+    excerpt: "Signal Garden gives technical founders a calmer distribution practice.", classification: "intent" as const, confidence: 52,
+  }];
+  const nativeExecutor = { activeDescriptor: async () => { throw new Error("Native executor should not be used."); } } as unknown as NativeModelExecutor;
+  const runtimeExecutor = { generateObject: async (input: { contextFiles: Record<string, unknown> }) => {
+    assert.ok(Array.isArray((input.contextFiles.sources as unknown[])));
+    return {
+      output: {
+        name: { value: "Signal Garden", citations: ["Founder brief"], needsReview: false },
+        description: { value: "A calmer distribution practice.", citations: ["Founder brief"], needsReview: false },
+        audience: { value: "Technical founders building alone", citations: ["Founder brief"], needsReview: false },
+        positioning: { value: "Evidence before reach.", citations: ["Founder brief"], needsReview: false },
+        stage: { value: "early" as const, citations: ["Founder brief"], needsReview: false },
+        suggestedObjectives: [
+          { value: "Earn ten qualified founder replies", citations: ["Founder brief"] },
+          { value: "Book three product-learning conversations", citations: ["Founder brief"] },
+        ],
+      },
+      runtimeId: "codex" as const, model: "runtime default", durationMs: 24, activityCount: 4, attempts: 1,
+    };
+  } } as unknown as AgentRuntimeExecutor;
+  const controlPlane = { getExecutionProfile: async () => ({ runtimeId: "codex" as const, modelProfileId: "google-profile", runtimeModel: "", updatedAt: new Date().toISOString() }) } as unknown as AIControlPlaneStore;
+  try {
+    const brief = await synthesizeProductBrief(sources, buildProductBrief(sources), nativeExecutor, database, runtimeExecutor, controlPlane);
+    assert.equal(brief.analysis.mode, "ai");
+    assert.equal(brief.analysis.provider, "Codex CLI");
+    assert.equal(brief.analysis.model, "runtime default");
+    const run = database.getRecentHarnessRuns()[0];
+    assert.equal(run?.runtimeId, "codex");
+    assert.equal(run?.provider, "");
+    assert.equal(run?.status, "completed");
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Cursor runtime output is normalized and schema-validated from a bounded workspace", async () => {
   const directory = mkdtempSync(join(tmpdir(), "distribution-os-runtime-test-"));
   const controlPlane = new AIControlPlaneStore(directory, async () => ({ stdout: "opencode 1.0.0", stderr: "" }));
@@ -135,6 +177,67 @@ test("Cursor runtime output is normalized and schema-validated from a bounded wo
     const result = await executor.generateObject({ schema: planSchema, prompt: "Plan", contextFiles: { evidence: [{ title: "Founder brief" }] } });
     assert.equal(result.runtimeId, "cursor");
     assert.equal(result.output.moves[0]?.citationLabels[0], "Founder brief");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded readiness probes exercise OpenCode and Codex through their real adapter contracts", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-runtime-probes-"));
+  const controlPlane = new AIControlPlaneStore(directory, async () => ({ stdout: "runtime 1.0.0", stderr: "" }));
+  try {
+    const executor = new AgentRuntimeExecutor(controlPlane, async (command, args, cwd) => {
+      assert.match(cwd, /distribution-os-runtime-/);
+      const output = JSON.stringify({ status: "ready", evidenceLabel: "runtime-probe" });
+      if (command === "codex") {
+        const outputIndex = args.indexOf("-o");
+        assert.ok(outputIndex >= 0);
+        assert.ok(args.includes("--output-schema"));
+        writeFileSync(args[outputIndex + 1]!, output);
+        return { stdout: `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: output } })}\n`, stderr: "" };
+      }
+      assert.equal(command, "opencode");
+      return { stdout: `${JSON.stringify({ type: "text", part: { text: output } })}\n`, stderr: "" };
+    });
+
+    const openCode = await executor.probeRuntime("opencode");
+    const codex = await executor.probeRuntime("codex");
+    assert.equal(openCode.ok, true);
+    assert.equal(codex.ok, true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime launcher closes stdin so non-interactive CLIs do not wait for more prompt input", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-runtime-stdin-"));
+  try {
+    const result = await runRuntimeCommand(process.execPath, ["-e", "process.stdin.resume(); process.stdin.once('end', () => console.log('stdin-closed'));"], directory);
+    assert.equal(result.stdout.trim(), "stdin-closed");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime readiness probes expose only bounded failure categories", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-runtime-probe-errors-"));
+  const controlPlane = new AIControlPlaneStore(directory, async () => ({ stdout: "runtime 1.0.0", stderr: "" }));
+  try {
+    const authenticationFailure = new AgentRuntimeExecutor(controlPlane, async () => {
+      throw Object.assign(new Error("private command details"), { stdout: JSON.stringify({ error: { message: "Provided authentication token is expired." } }), stderr: "" });
+    });
+    const auth = await authenticationFailure.probeRuntime("opencode");
+    assert.equal(auth.ok, false);
+    assert.equal(auth.failureCode, "authentication-required");
+    assert.doesNotMatch(auth.detail, /customer@example\.com|private command/i);
+
+    const schemaFailure = new AgentRuntimeExecutor(controlPlane, async () => ({
+      stdout: `${JSON.stringify({ type: "text", part: { text: JSON.stringify({ status: "almost" }) } })}\n`,
+      stderr: "",
+    }));
+    const schema = await schemaFailure.probeRuntime("opencode");
+    assert.equal(schema.ok, false);
+    assert.equal(schema.failureCode, "schema-invalid");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -368,6 +471,102 @@ test("interrupted automation runs recover safely after a service restart", () =>
     assert.match(recovered.error, /closed safely/i);
     assert.equal(database.getDueAutomationPlaybooks().some((item) => item.id === playbook.id), true);
   } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("deleting an evidence loop removes its schedule but preserves completed run history", () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-loop-delete-"));
+  const database = new DistributionDatabase(directory);
+  try {
+    const productId = seedProduct(database);
+    const playbook = database.createAutomationPlaybook({ productId, intervalMinutes: 60, maxActionsPerRun: 1 });
+    const active = database.beginAutomationRun(playbook.id, "manual", "loop-delete-active").run;
+    database.startAutomationRun(active.id);
+    assert.throws(() => database.archiveAutomationPlaybook(playbook.id), /active evidence loop run/i);
+    database.finishAutomationRun(active.id, "completed", "One bounded cycle completed.");
+
+    database.archiveAutomationPlaybook(playbook.id);
+    assert.throws(() => database.getAutomationPlaybook(playbook.id), /not found/i);
+    assert.equal(database.getAutomationState().playbooks.some((item) => item.id === playbook.id), false);
+    assert.equal(database.getDueAutomationPlaybooks("9999-12-31T23:59:59.999Z").some((item) => item.id === playbook.id), false);
+    assert.equal(database.getAutomationRun(active.id).summary, "One bounded cycle completed.");
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("DEV First Win Loop quarantines signals, publishes only an approved edit, and refreshes outcomes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-devto-"));
+  const database = new DistributionDatabase(directory);
+  const previousKey = process.env.DEVTO_API_KEY;
+  delete process.env.DEVTO_API_KEY;
+  let storedKey: string | null = null;
+  let publishedBody = "";
+  let metricVersion = 0;
+  const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    if (url.endsWith("/users/me")) return Response.json({ id: 7, username: "founder" });
+    if (url.includes("/articles/search")) return Response.json([{
+      id: 41, title: "Distribution without spam", description: "A technical founder asks how to choose a useful channel.",
+      url: "https://dev.to/founder/distribution-without-spam", published_at: "2026-08-20T12:00:00Z", comments_count: 3, public_reactions_count: 7,
+    }]);
+    if (url.endsWith("/articles") && init?.method === "POST") {
+      publishedBody = String(init.body);
+      return Response.json({ id: 99, title: "Evidence-first distribution", url: "https://dev.to/me/evidence-first-distribution", comments_count: 0, public_reactions_count: 0, page_views_count: 1 }, { status: 201 });
+    }
+    if (url.includes("/articles/me/all")) return Response.json([{
+      id: 99, title: "Evidence-first distribution", url: "https://dev.to/me/evidence-first-distribution",
+      comments_count: metricVersion ? 2 : 0, public_reactions_count: metricVersion ? 5 : 0, page_views_count: metricVersion ? 31 : 1,
+    }]);
+    throw new Error(`Unexpected DEV request: ${url}`);
+  };
+  const connector = new DevToConnector(database, fetcher as typeof fetch, {
+    read: async () => storedKey,
+    write: async (secret) => { storedKey = secret; },
+  });
+  try {
+    const productId = seedProduct(database);
+    await connector.saveApiKey("devto-test-key-123456");
+    assert.equal(storedKey, "devto-test-key-123456");
+    const connected = await connector.connectAndSync(productId, "technical founder distribution", ["opensource", "productivity"]);
+    assert.equal(connected.imported, 1);
+    let dashboard = database.getDashboard();
+    assert.equal(dashboard.signalInbox[0]?.origin, "devto");
+    assert.equal(dashboard.signalInbox[0]?.status, "new");
+    assert.equal(dashboard.audienceSignals.length, 0);
+    database.decideSignalCandidate(dashboard.signalInbox[0].id, "accept");
+    assert.equal(database.getDashboard().audienceSignals.length, 1);
+
+    const runId = database.beginHarnessRun({ kind: "distribution-plan", productId, runtimeId: "native" });
+    database.applyDistributionPlan({
+      runId, productId, summary: "One cited DEV contribution.", assumptions: [], mode: "ai", warning: "",
+      moves: [{
+        channelId: "devto", type: "durable-content", title: "A practical evidence-first distribution loop",
+        whyNow: "A current DEV discussion exposes the exact founder problem.", suggestedAngle: "Share the bounded workflow and ask where it breaks.",
+        draftCopy: "Start with a real observation, cite the product evidence, and make one useful contribution. Then measure what actually happened.",
+        citationLabels: ["Distribution without spam"], relevanceScore: 94, valueScore: 90, freshnessScore: 88, promotionRisk: 8,
+      }],
+    });
+    dashboard = database.getDashboard();
+    const opportunity = dashboard.opportunities.find((item) => item.title.startsWith("A practical evidence"));
+    assert.ok(opportunity);
+    await assert.rejects(() => connector.executeApproved(opportunity.id), /Approve/);
+    database.decideOpportunity(opportunity.id, "approve", `${opportunity.draftCopy}\n\nFounder edit.`);
+    const receipt = await connector.executeApproved(opportunity.id);
+    assert.equal(receipt.externalId, "99");
+    assert.match(publishedBody, /Founder edit/);
+    metricVersion = 1;
+    assert.equal(await connector.syncOutcomes(), 1);
+    const measured = database.getDashboard().opportunities.find((item) => item.id === opportunity.id);
+    assert.equal(measured?.execution?.status, "published");
+    assert.equal(measured?.outcomes.find((item) => item.metric === "views")?.value, 31);
+    assert.equal(database.getOutcomeMemory(productId).find((item) => item.metric === "comments")?.total, 2);
+  } finally {
+    if (previousKey === undefined) delete process.env.DEVTO_API_KEY;
+    else process.env.DEVTO_API_KEY = previousKey;
     database.close();
     rmSync(directory, { recursive: true, force: true });
   }

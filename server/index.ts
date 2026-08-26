@@ -10,11 +10,12 @@ import { generateDistributionPlan } from "./distribution-harness.ts";
 import { writeContributionDraft } from "./contribution-harness.ts";
 import { AgentRuntimeExecutor } from "./runtime-executor.ts";
 import { GitHubConnectorService } from "./github-connector.ts";
+import { DevToConnector } from "./devto-connector.ts";
 import { AutomationKernel } from "./automation-kernel.ts";
 import { DistributionActionFabric } from "./action-fabric.ts";
 import { ActionConnectionService } from "./action-connections.ts";
 import { isTrustedLocalRequest } from "./local-request.ts";
-import { isProductStage, type ChannelMode, type OnboardProductInput, type OnboardingSourceInput } from "./domain.ts";
+import { isProductStage, type AgentRuntimeId, type ChannelMode, type OnboardProductInput, type OnboardingSourceInput } from "./domain.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
 const database = new DistributionDatabase();
@@ -22,6 +23,7 @@ const aiControlPlane = new AIControlPlaneStore(database.dataDirectory);
 const modelExecutor = new NativeModelExecutor(aiControlPlane);
 const runtimeExecutor = new AgentRuntimeExecutor(aiControlPlane);
 const githubConnector = new GitHubConnectorService(database);
+const devToConnector = new DevToConnector(database);
 const actionFabric = new DistributionActionFabric(database);
 const actionConnections = new ActionConnectionService(database, actionFabric);
 const automationKernel = new AutomationKernel(database, {
@@ -147,7 +149,21 @@ const server = createServer(async (request, response) => {
       json(response, 200, result);
       return;
     }
+    const runtimeTestMatch = url.pathname.match(/^\/api\/ai\/runtimes\/([^/]+)\/test$/);
+    if (request.method === "POST" && runtimeTestMatch) {
+      const body = await readJson(request);
+      const runtimeId = decodeURIComponent(runtimeTestMatch[1]) as AgentRuntimeId;
+      if (!["claude-code", "cursor", "opencode", "codex"].includes(runtimeId)) throw new Error("Choose a supported external runtime.");
+      const result = await runtimeExecutor.probeRuntime(runtimeId, typeof body.model === "string" ? body.model.trim().slice(0, 160) : "");
+      const controlPlane = await aiControlPlane.recordRuntimeVerification(runtimeId, result);
+      console.info("[ai-control-plane] runtime tested", { runtimeId, ok: result.ok, failureCode: result.failureCode || "", durationMs: result.durationMs });
+      json(response, 200, { ...result, controlPlane });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/refresh") {
+      const devConnection = database.getDevToConnection();
+      if (devConnection.productId && devConnection.signalQuery) await devToConnector.syncSignals(devConnection.productId);
+      await devToConnector.syncOutcomes();
       json(response, 200, database.getDashboard());
       return;
     }
@@ -248,6 +264,11 @@ const server = createServer(async (request, response) => {
       json(response, 200, { playbook, dashboard: database.getDashboard() });
       return;
     }
+    if (request.method === "DELETE" && automationPlaybookMatch) {
+      database.archiveAutomationPlaybook(decodeURIComponent(automationPlaybookMatch[1]));
+      json(response, 200, { dashboard: database.getDashboard() });
+      return;
+    }
     const automationRunMatch = url.pathname.match(/^\/api\/automation\/playbooks\/([^/]+)\/run$/);
     if (request.method === "POST" && automationRunMatch) {
       const run = await automationKernel.runPlaybook(decodeURIComponent(automationRunMatch[1]));
@@ -258,6 +279,24 @@ const server = createServer(async (request, response) => {
       const body = await readJson(request);
       const result = await githubConnector.connect(String(body.productId || ""), String(body.repository || ""));
       json(response, 201, { ...result, dashboard: database.getDashboard() });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/connectors/devto/credential") {
+      const body = await readJson(request);
+      await devToConnector.saveApiKey(String(body.apiKey || ""));
+      json(response, 200, database.getDashboard());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/connectors/devto") {
+      const body = await readJson(request);
+      const tags = Array.isArray(body.publishTags) ? body.publishTags.map(String) : [];
+      const result = await devToConnector.connectAndSync(String(body.productId || ""), String(body.signalQuery || ""), tags);
+      json(response, 201, { ...result, dashboard: database.getDashboard() });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/connectors/devto/outcomes/sync") {
+      const synced = await devToConnector.syncOutcomes();
+      json(response, 200, { synced, dashboard: database.getDashboard() });
       return;
     }
     const connectorSyncMatch = url.pathname.match(/^\/api\/connectors\/([^/]+)\/sync$/);
@@ -283,6 +322,7 @@ const server = createServer(async (request, response) => {
         audience: String(body.audience || ""),
         objective: String(body.objective || ""),
         positioning: String(body.positioning || ""),
+        voiceGuidance: typeof body.voiceGuidance === "string" ? body.voiceGuidance : "",
         websiteUrl: typeof body.websiteUrl === "string" ? body.websiteUrl : "",
         repositoryUrl: typeof body.repositoryUrl === "string" ? body.repositoryUrl : "",
         sources: Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : [],
@@ -293,11 +333,17 @@ const server = createServer(async (request, response) => {
       json(response, existingProductId ? 200 : 201, { productId, operation: existingProductId ? "updated" : "created", dashboard: database.getDashboard() });
       return;
     }
+    const productMatch = url.pathname.match(/^\/api\/products\/([^/]+)$/);
+    if (request.method === "DELETE" && productMatch) {
+      database.deleteProduct(decodeURIComponent(productMatch[1]));
+      json(response, 200, { dashboard: database.getDashboard() });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/products/analyze") {
       const body = await readJson(request);
       const sources = await ingestSources(Array.isArray(body.sources) ? body.sources as OnboardingSourceInput[] : []);
       const localBrief = buildProductBrief(sources);
-      json(response, 200, { brief: await synthesizeProductBrief(sources, localBrief, modelExecutor, database) });
+      json(response, 200, { brief: await synthesizeProductBrief(sources, localBrief, modelExecutor, database, runtimeExecutor, aiControlPlane) });
       return;
     }
     const planMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/plan$/);
@@ -377,6 +423,12 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && draftMatch) {
       const result = await writeContributionDraft(decodeURIComponent(draftMatch[1]), modelExecutor, database);
       json(response, 200, { result, dashboard: database.getDashboard() });
+      return;
+    }
+    const executeMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/execute$/);
+    if (request.method === "POST" && executeMatch) {
+      const receipt = await devToConnector.executeApproved(decodeURIComponent(executeMatch[1]));
+      json(response, 201, { receipt, dashboard: database.getDashboard() });
       return;
     }
     const outcomeMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/outcomes$/);

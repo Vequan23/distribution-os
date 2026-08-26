@@ -6,12 +6,13 @@ Distribution-OS treats distribution as a governed evidence-to-outcome loop, not 
 
 1. **Ingest** bounds source material and classifies it as intent, public claim, implementation, or outcome evidence.
 2. **Understand** performs deterministic extraction and, when configured, schema-valid source-cited AI synthesis.
-3. **Observe** captures founder-supplied public discussions or imports recent GitHub issues through a read-only connector into a quarantined Signal Inbox. Pull requests and duplicate issues are excluded. Human acceptance promotes a candidate into a separate audience-evidence class. One observation is never promoted into a trend or proof of demand.
-4. **Plan** runs either the native AI SDK `ToolLoopAgent` or a selected external runtime against product memory, product evidence, audience observations, channel policy, and prior outcomes.
+3. **Observe** captures founder-supplied public discussions or imports recent GitHub issues and bounded DEV article search results through read-only connectors into a quarantined Signal Inbox. Human acceptance promotes a candidate into a separate audience-evidence class. One observation is never promoted into a trend or proof of demand.
+4. **Plan** runs either the native Vraxis tool-agent contract over the AI SDK or a selected external runtime against product memory, product evidence, audience observations, channel policy, and prior outcomes.
 5. **Verify** rejects moves without exact evidence-label citations and validates all output through Zod schemas.
 6. **Write** runs a separate native contribution loop that must read the selected opportunity and its supporting evidence before updating the editable channel draft.
 7. **Approve** gives the founder an explicit approve/skip decision. No public side effect exists in this stage.
-8. **Learn** records an observed metric and exposes aggregated outcome memory to the next agent run.
+8. **Execute** permits one approved DEV contribution to cross the public boundary only through a separate founder confirmation, daily channel policy, verified credential, and durable receipt. Other channels remain manual handoffs or Action Fabric connections.
+9. **Learn** records manual outcomes or refreshes DEV views, reactions, and comments as connector snapshots, then exposes the latest observations to the next agent run.
 
 ## Automation Kernel
 
@@ -25,6 +26,8 @@ An evidence-loop playbook stores a product, schedule, and maximum number of prep
 4. **Gate** stops in `waiting-approval`. No connector can cross the public identity boundary.
 
 The run remains linked to the exact opportunities it prepared. Once each receives an approve or skip decision, the automation run closes as completed; restoring a move to review reopens the approval wait.
+
+Evidence-loop deletion is an archive operation: it disables and hides the schedule while preserving completed runs and downstream outcomes for learning. Project deletion is a separate, typed-confirmation boundary and performs a permanent local cascade across every project-owned table plus non-foreign-key run, action, connector-configuration, and event records. Both operations refuse to proceed while a related automation run is queued or running.
 
 Schedules and run state survive service restarts. Duplicate trigger keys reuse the existing run, active runs do not overlap, and the global pause control prevents new automated work. If the local service stops mid-cycle, startup recovery closes the interrupted run safely, records that no public action occurred, and returns the playbook to the due schedule. A source failure is visible but does not turn missing observations into fabricated evidence. Empty cycles complete successfully without manufacturing activity.
 
@@ -67,13 +70,19 @@ The native agent can call only five read tools:
 - channel policy
 - prior outcome memory
 
-Tool outputs are returned to subsequent model steps by `ToolLoopAgent`. The loop stops after ten steps. Structured-output failures receive one bounded repair attempt; unrecoverable errors create a visible local fallback plan.
+Vraxis forces those tools in that exact order through the AI SDK adapter, returns their outputs to subsequent model steps, then removes every tool during final synthesis. The loop stops after ten steps. Structured-output failures receive one bounded repair attempt; unrecoverable errors create a visible local fallback plan.
 
-The contribution writer is also a `ToolLoopAgent`, but it has a narrower job. It must read the opportunity and exact supporting evidence before returning one channel-native draft. The result is citation-checked, persisted as editable copy, and recorded as a `contribution-draft` harness run. It cannot approve or publish the contribution.
+The contribution writer is a separate Vraxis agent with a narrower sequence: it must read the opportunity and exact supporting evidence before returning one channel-native draft. The result is citation-checked, persisted as editable copy, and recorded as a `contribution-draft` harness run. It cannot approve or publish the contribution.
+
+Native planning and contribution writing run through `@vraxis/agent-v`'s `AiSdkToolAgentEngine`; onboarding and the single bounded plan/contribution repair attempt use its `AiSdkStructuredModelEngine`. Every call receives an explicit confidential local project scope and returns Vraxis engine, adapter strategy, provider, model, and AI SDK runtime provenance. Tool-agent runs additionally return normalized sequence evidence: tool identity, version, model step, status, duration, and approval disposition. Distribution-OS records that redacted audit in its harness ledger without persisting tool inputs or outputs. Distribution-OS continues to resolve credentials, define the read tools and Zod schemas, verify exact evidence labels, bound retries, decide when to fall back, and own the human approval/publication boundary.
 
 ## External runtime loop
 
 Claude Code, OpenCode, Codex CLI, and Cursor Agent receive JSON evidence files in a disposable temporary workspace. Distribution-OS requests read-only behavior, normalizes the runtime's final output, validates it against the same plan schema, verifies citations, and deletes the workspace. Runtime authentication and model selection remain owned by the runtime.
+
+Installation discovery and execution readiness are separate states. A bounded readiness probe sends only a synthetic `runtime-probe` JSON file through the real runtime adapter and requires an exact schema-valid response. The result is tied to the discovered CLI version and stores only ready/failed state, timestamp, duration, and a normalized failure category such as authentication, timeout, invocation, empty output, invalid JSON, or schema mismatch. Raw CLI output is not retained. A version change invalidates the prior readiness result.
+
+The active execution profile also owns product-brief synthesis. When an external runtime such as Codex CLI is selected, onboarding sends only bounded source evidence into its disposable read-only workspace and records that runtime in the harness ledger. A runtime failure returns the deterministic local extraction; it never silently switches to a configured model API.
 
 ## Durable ledger
 
@@ -81,4 +90,6 @@ SQLite records harness and automation runs, step names/statuses, triggers, selec
 
 ## Connector boundary
 
-The first connector is deliberately narrow. GitHub repository metadata and recent issues are read from fixed `api.github.com` endpoints only. A sync never comments, edits, reacts, subscribes, or publishes. Connector metadata and safe rate-limit state are stored locally; `GITHUB_TOKEN`, when supplied, remains an environment credential. Imported issues enter the Signal Inbox and cannot influence a plan until the founder accepts them as bounded audience evidence.
+The connector boundary is deliberately narrow. GitHub repository metadata and recent issues are read from fixed `api.github.com` endpoints only. DEV public article search imports at most eight bounded candidates per sync. Both enter the Signal Inbox and cannot influence a plan until the founder accepts them as audience evidence.
+
+DEV is the only built-in direct publishing connector. Public search needs no credential; publishing and authenticated outcome capture require a key verified against DEV and read from macOS Keychain or `DEVTO_API_KEY`. Approval and execution are separate actions, the channel daily limit is enforced immediately before transport, a missing receipt is failure, and scheduled Automation Kernel runs cannot publish.

@@ -47,8 +47,10 @@ Every proposed move must answer four questions:
 - Separate evidence classes for founder intent, public claims, implementation, audience observations, and outcomes
 - A quarantined Signal Inbox where observations must be accepted before they become citable audience evidence
 - A read-only GitHub Issues connector with manual sync, pull-request filtering, deduplication, and the same human evidence gate
+- A narrow DEV connector that quarantines public article observations, publishes only a separately approved contribution, records a receipt, and refreshes views, reactions, and comments
 - Multi-provider model profiles with environment-variable or macOS Keychain credentials
-- A native Vercel AI SDK `ToolLoopAgent` with an enforced evidence-reading sequence
+- Vraxis-backed native agents with host-enforced evidence-reading sequences and redacted tool-call audit evidence
+- Vraxis-backed schema execution for cited onboarding and bounded plan/draft repair, with project-scoped execution and adapter provenance
 - Bounded Claude Code, OpenCode, Codex CLI, and Cursor Agent runtime adapters
 - Exact citation verification, one bounded repair attempt, and visible fallback behavior
 - A dedicated channel-native contribution writer that reads the opportunity and its supporting evidence before producing editable copy
@@ -82,7 +84,7 @@ Open [http://127.0.0.1:4190](http://127.0.0.1:4190). The Vite app proxies the lo
 
 ### Your first loop
 
-1. Select **Add Product** and provide at least one product source.
+1. Select **Add Project** and provide at least one product source.
 2. Generate and correct the product brief, then approve it as product memory.
 3. Optionally open **AI Harness** to configure a model API or installed agent runtime.
 4. Connect a public GitHub repository in **Signal Inbox**, or manually capture a bounded public observation.
@@ -93,6 +95,12 @@ Open [http://127.0.0.1:4190](http://127.0.0.1:4190). The Vite app proxies the lo
 9. Edit the draft, then approve or skip the move.
 10. Complete the approved work through a manual handoff or, for a verified Action Fabric connection, approve one exact sanitized request for execution.
 11. Record the observed outcome in Campaigns. The next manual or scheduled cycle receives the accumulated decision and outcome memory.
+
+Use the persistent **Project** switcher in the toolbar to keep one project's recommendations, signals, campaigns, journal, and run evidence in context. Choose **All Projects** for the portfolio view, then open **Projects** to see every onboarded project.
+
+Project and loop deletion use deliberately different semantics. **Delete loop** removes the active schedule while retaining its completed run, decision, and outcome history. **Delete project** requires typing `DELETE` and permanently cascades through that project's evidence, signals, opportunities, outcomes, connectors, automation configuration and runs, harness runs, project-linked action records, and ledger events. An active automation run must finish before either deletion can proceed.
+
+DEV public signal discovery does not require a credential. For founder-approved publishing and authenticated outcome capture, create a key in [DEV Settings → Extensions](https://dev.to/settings/extensions), then use **Channels → DEV → Verify & save securely**. The key is verified before macOS Keychain storage and never enters SQLite. `DEVTO_API_KEY` remains available as a local environment-variable alternative.
 
 > **Note:** Refreshing the workspace reloads local dashboard state. It does not silently re-fetch URLs, repositories, or external audience sources.
 
@@ -111,6 +119,8 @@ The native agent cannot jump directly from a product summary to a confident reco
 Tool results are fed into subsequent model steps. The final plan is schema-validated, and every move needs at least one citation matching an exact product-evidence label. Audience observations may strengthen a move, but one observation is never promoted into a trend or proof of demand.
 
 External runtimes receive bounded JSON evidence in a disposable temporary workspace. Their final output passes through the same schema and citation checks before it can enter the review queue.
+
+Runtime discovery proves only that a supported CLI is installed. **Test** in AI Harness runs one synthetic, schema-validated task through the same disposable read-only adapter used by onboarding and planning. Readiness is stored locally for that exact CLI version; upgrading the CLI returns it to **Installed · unverified** until it is tested again. Failed tests retain only a normalized category, bounded explanation, duration, and timestamp—not raw output or credentials.
 
 Post writing is a separate governed loop. The native contribution writer must read the selected opportunity and its supporting evidence before returning one complete channel draft. It updates only the editable draft; approval and public execution remain separate human decisions.
 
@@ -132,7 +142,9 @@ These are intentionally separate layers.
 | Agent runtime | Its own model selection, authentication, tools, and internal agent behavior | Claude Code, OpenCode, Codex CLI, Cursor Agent |
 | Action Fabric | Capability declaration, policy, budgets, idempotency, approval, and redacted results | Direct APIs, MCP, bounded CLIs, optional managed gateways, human handoffs |
 
-Distribution-OS owns the evidence boundary, temporary workspace, plan schema, citation verification, run ledger, and human approval gate. External runtimes continue to own their authentication and tool behavior.
+Distribution-OS owns the evidence boundary, temporary workspace, plan schema, citation verification, run ledger, and human approval gate. The selected execution profile powers both cited onboarding and distribution planning; external runtimes continue to own their authentication and tool behavior.
+
+[`@vraxis/agent-v`](https://www.npmjs.com/package/@vraxis/agent-v) provides the provider-neutral contracts beneath native onboarding, schema repair, planning, and contribution writing. Vraxis 0.5 enforces each native agent's exact read-tool sequence at the host adapter, disables tools during final synthesis, and returns a normalized audit containing tool identity, version, step, status, duration, and approval disposition without tool payloads. It also returns engine, adapter, provider, model, and AI SDK runtime provenance. Distribution-OS still owns model-profile resolution, credentials, Zod domain schemas, evidence tools, exact citation verification, retry/fallback policy, and the human approval/publication boundary.
 
 Configure credentials in **AI Harness** or through environment variables:
 
@@ -146,7 +158,7 @@ GROQ_API_KEY=
 GITHUB_TOKEN=
 ```
 
-Keys entered through the macOS UI are stored in Keychain. Use **Test** on a profile before running AI onboarding or plan generation. Installed external runtimes must be authenticated through their own CLI.
+Keys entered through the macOS UI are stored in Keychain. Use **Test** on a profile before running AI onboarding or plan generation. Installed external runtimes must be authenticated through their own CLI. Use **Test** on the runtime card before relying on it for onboarding or planning; installation alone is not presented as readiness.
 
 ## Data, privacy, and security
 
@@ -182,7 +194,7 @@ Distribution-OS currently creates evidence-grounded plans and drafts, stores fou
 
 It does **not** yet provide:
 
-- Authenticated social or community publishing connectors
+- Authenticated publishing beyond the narrow approval-gated DEV connector
 - Autonomous posting or outreach
 - Broad continuous audience monitoring or representative trend detection beyond configured read-only GitHub issue sources
 - Automatic product analytics or revenue attribution

@@ -76,8 +76,14 @@ test("pasted context infers a named product instead of using the generic source 
 
 test("web imports reject direct and DNS-resolved private network targets", async () => {
   assert.throws(() => safeRemoteUrl("http://127.0.0.1:4190/api/health"), /private-network/i);
+  assert.equal(isPrivateAddress("8.8.8.8"), false);
+  assert.equal(isPrivateAddress("::ffff:8.8.8.8"), false);
   assert.equal(isPrivateAddress("::ffff:7f00:1"), true);
   assert.equal(isPrivateAddress("fc00::1"), true);
+  assert.deepEqual(
+    await resolvePublicAddress("github.com", async () => [{ address: "140.82.113.4", family: 4 }]),
+    { address: "140.82.113.4", family: 4 },
+  );
   await assert.rejects(
     resolvePublicAddress("public-looking.example", async () => [{ address: "127.0.0.1", family: 4 }]),
     /private-network/i,

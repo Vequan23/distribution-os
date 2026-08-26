@@ -49,3 +49,28 @@ test("runtime discovery distinguishes a missing executable from an available run
   assert.equal(status.availability, "missing");
   assert.match(status.detail, /not installed/i);
 });
+
+test("runtime readiness is persisted for the tested CLI version and invalidated after an upgrade", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-runtime-readiness-"));
+  let codexVersion = "codex-cli 1.0.0";
+  const runner = async (command: string, args: string[]) => ({
+    stdout: command === "claude" && args[0] === "auth" ? JSON.stringify({ loggedIn: true }) : command === "codex" ? codexVersion : `${command} 1.0.0`,
+    stderr: "",
+  });
+  try {
+    const store = new AIControlPlaneStore(directory, runner);
+    const initial = await store.getPublicState();
+    assert.equal(initial.runtimes.find((runtime) => runtime.id === "codex")?.verification, "unverified");
+
+    const verified = await store.recordRuntimeVerification("codex", { ok: true, durationMs: 42, detail: "Authenticated and returned schema-valid bounded output." });
+    const ready = verified.runtimes.find((runtime) => runtime.id === "codex");
+    assert.equal(ready?.verification, "ready");
+    assert.equal(ready?.verificationDurationMs, 42);
+
+    codexVersion = "codex-cli 1.1.0";
+    const upgraded = await store.getPublicState();
+    assert.equal(upgraded.runtimes.find((runtime) => runtime.id === "codex")?.verification, "unverified");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

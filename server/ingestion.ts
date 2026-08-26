@@ -26,7 +26,7 @@ for (const [network, prefix] of [
   ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
 ] as Array<[string, number]>) blockedAddresses.addSubnet(network, prefix, "ipv4");
 for (const [network, prefix] of [
-  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["64:ff9b::", 96], ["100::", 64],
+  ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["100::", 64],
   ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
 ] as Array<[string, number]>) blockedAddresses.addSubnet(network, prefix, "ipv6");
 
@@ -110,7 +110,10 @@ async function downloadRemote(url: URL, redirects = 0): Promise<{ body: string; 
   if (redirects > 4) throw new Error("This web source redirected too many times.");
   const pinned = await resolvePublicAddress(url.hostname);
   const client = url.protocol === "https:" ? httpsRequest : httpRequest;
-  const pinnedLookup: LookupFunction = (_hostname, _options, callback) => callback(null, pinned.address, pinned.family);
+  const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
+    if (options.all) callback(null, [pinned]);
+    else callback(null, pinned.address, pinned.family);
+  };
   return new Promise((resolvePromise, rejectPromise) => {
     let settled = false;
     const reject = (error: Error): void => {

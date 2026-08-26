@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { activateAgentRuntime, activateModelProfile, approveActionExecution, captureProductSignals, connectGitHubSource, createActionAdapter, createAutomationPlaybook, decideOpportunity, decideSignal, disconnectSourceConnector, discoverAIRuntimes, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, previewActionPolicy, probeActionAdapter, recordOpportunityOutcome, refreshWorkspace, requestActionExecution, runAutomationPlaybook, saveModelProfile, setActionAdapterEnabled, setAutomationPaused, syncSourceConnector, testModelProfile, updateAutomationPlaybook, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
-import type { AIControlPlane, AutomationRun, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
+import { activateAgentRuntime, activateModelProfile, approveActionExecution, captureProductSignals, connectDevTo, connectGitHubSource, createActionAdapter, createAutomationPlaybook, decideOpportunity, decideSignal, deleteAutomationPlaybook, deleteProduct, disconnectSourceConnector, discoverAIRuntimes, executeOpportunity, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, previewActionPolicy, probeActionAdapter, recordOpportunityOutcome, requestActionExecution, runAutomationPlaybook, saveDevToCredential, saveModelProfile, setActionAdapterEnabled, setAutomationPaused, syncSourceConnector, testAgentRuntime, testModelProfile, updateAutomationPlaybook, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
+import type { AgentRuntimeStatus, AIControlPlane, AutomationRun, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
 import type { ActionAdapterDescriptor, ActionCapability, ActionExecutionRecord, ActionToolDescriptor, ActionTransport } from "../packages/action-fabric/src/index.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
 
@@ -9,6 +9,7 @@ type View = "command" | "automation" | "onboarding" | "memory" | "signals" | "au
 
 const state = ref<DashboardState | null>(null);
 const view = ref<View>("command");
+const activeProductId = ref("");
 const selectedId = ref("");
 const draft = ref("");
 const loading = ref(true);
@@ -17,7 +18,8 @@ const onboardingBusy = ref(false);
 const planBusy = ref(false);
 const planElapsedSeconds = ref(0);
 const planNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
-const productNotice = ref<{ tone: "success" | "warning"; title: string; detail: string } | null>(null);
+const productNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
+const productDeleteBusyId = ref("");
 const campaignNotice = ref<{ tone: "success" | "danger"; title: string; detail: string } | null>(null);
 const copiedOpportunityId = ref("");
 const error = ref("");
@@ -30,6 +32,8 @@ const modelInput = ref<HTMLInputElement | null>(null);
 const baseUrlInput = ref<HTMLInputElement | null>(null);
 const runtimeModel = ref("");
 const testingProfileId = ref("");
+const testingRuntimeId = ref("");
+const runtimeNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const outcomeOpportunityId = ref("");
 const outcomeForm = reactive({ metric: "qualified-visits", value: 0, note: "" });
 const signalBusy = ref(false);
@@ -39,6 +43,10 @@ const signalForm = reactive({ productId: "", type: "text" as "text" | "url", lab
 const connectorBusyId = ref("");
 const connectorNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const connectorForm = reactive({ productId: "", repository: "" });
+const devToApiKey = ref("");
+const devToBusy = ref(false);
+const devToNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
+const devToForm = reactive({ productId: "", signalQuery: "", publishTags: "opensource, productivity" });
 const draftBusy = ref(false);
 const draftNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const channelEditingId = ref("");
@@ -59,18 +67,35 @@ const actionInvocation = reactive({ adapterId: "", adapterName: "", toolName: ""
 let planAbortController: AbortController | null = null;
 let planTimer: number | null = null;
 
-const readyOpportunities = computed(() => state.value?.opportunities.filter((item) => item.status === "ready") ?? []);
+const activeProduct = computed(() => state.value?.products.find((item) => item.id === activeProductId.value) ?? null);
+const scopedProducts = computed(() => activeProduct.value ? [activeProduct.value] : state.value?.products ?? []);
+const scopedOpportunities = computed(() => state.value?.opportunities.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
+const readyOpportunities = computed(() => scopedOpportunities.value.filter((item) => item.status === "ready"));
 const selected = computed(() => {
   if (!state.value) return null;
-  return state.value.opportunities.find((item) => item.id === selectedId.value && item.status === "ready")
+  return scopedOpportunities.value.find((item) => item.id === selectedId.value && item.status === "ready")
     ?? readyOpportunities.value[0]
     ?? null;
 });
-const approved = computed(() => state.value?.opportunities.filter((item) => item.status === "approved") ?? []);
-const newSignals = computed(() => state.value?.signalInbox.filter((item) => item.status === "new") ?? []);
-const reviewedSignals = computed(() => state.value?.signalInbox.filter((item) => item.status !== "new") ?? []);
+const approved = computed(() => scopedOpportunities.value.filter((item) => item.status === "approved"));
+const published = computed(() => scopedOpportunities.value.filter((item) => item.status === "published"));
+const scopedSignalInbox = computed(() => state.value?.signalInbox.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
+const newSignals = computed(() => scopedSignalInbox.value.filter((item) => item.status === "new"));
+const reviewedSignals = computed(() => scopedSignalInbox.value.filter((item) => item.status !== "new"));
+const scopedAudienceSignals = computed(() => state.value?.audienceSignals.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
+const scopedConnectors = computed(() => state.value?.connectors.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
+const scopedEvents = computed(() => state.value?.recentEvents.filter((item) => !activeProductId.value || !item.productId || item.productId === activeProductId.value) ?? []);
+const scopedHarnessRuns = computed(() => state.value?.harnessRuns.filter((item) => !activeProductId.value || !item.productId || item.productId === activeProductId.value) ?? []);
+const scopedEvidenceCount = computed(() => scopedProducts.value.reduce((sum, product) => sum + product.evidenceCount, 0));
+const scopedConfidence = computed(() => scopedProducts.value.length ? Math.round(scopedProducts.value.reduce((sum, product) => sum + product.confidence, 0) / scopedProducts.value.length) : 0);
+const scopedPlaybooks = computed(() => state.value?.automation.playbooks.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
+const scopedAutomationRuns = computed(() => state.value?.automation.runs.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
+const devToChannel = computed(() => state.value?.channels.find((item) => item.id === "devto") ?? null);
 const activeRuntime = computed(() => ai.value?.runtimes.find((runtime) => runtime.id === ai.value?.execution.runtimeId) ?? null);
 const activeModelProfile = computed(() => ai.value?.profiles.find((profile) => profile.id === ai.value?.execution.modelProfileId) ?? null);
+const activeExecutionReady = computed(() => activeRuntime.value?.id === "native"
+  ? activeModelProfile.value?.readiness === "ready"
+  : activeRuntime.value?.verification === "ready");
 const selectedProvider = computed(() => ai.value?.providers.find((provider) => provider.id === profileForm.provider));
 const actionCapabilityOptions = computed<ActionCapability[]>(() => actionAdapterForm.transport === "cli"
   ? ["observe", "search", "read"]
@@ -82,12 +107,31 @@ watch(selected, (opportunity) => {
   draft.value = opportunity?.draftCopy ?? "";
 }, { immediate: true });
 
+watch(activeProductId, (productId) => {
+  window.localStorage.setItem("distribution-os.active-product", productId);
+  if (productId) {
+    signalForm.productId = productId;
+    connectorForm.productId = productId;
+    automationForm.productId = productId;
+    devToForm.productId = productId;
+  }
+  selectedId.value = readyOpportunities.value[0]?.id ?? "";
+});
+
 onMounted(async () => {
   try {
     state.value = await loadDashboard();
-    signalForm.productId = state.value.products[0]?.id ?? "";
-    connectorForm.productId = state.value.products[0]?.id ?? "";
-    automationForm.productId = state.value.products[0]?.id ?? "";
+    const storedProductId = window.localStorage.getItem("distribution-os.active-product") || "";
+    activeProductId.value = state.value.products.some((product) => product.id === storedProductId)
+      ? storedProductId
+      : state.value.products.length === 1 ? state.value.products[0]?.id ?? "" : "";
+    const initialProductId = activeProductId.value || state.value.products[0]?.id || "";
+    signalForm.productId = initialProductId;
+    connectorForm.productId = initialProductId;
+    automationForm.productId = initialProductId;
+    devToForm.productId = devToChannel.value?.connector.productId || initialProductId;
+    devToForm.signalQuery = devToChannel.value?.connector.signalQuery || "";
+    devToForm.publishTags = devToChannel.value?.connector.publishTags.join(", ") || "opensource, productivity";
     connectorForm.repository = state.value.products[0]?.repositoryUrl.includes("github.com") ? state.value.products[0].repositoryUrl : "";
     if (state.value.onboarding.required) view.value = "onboarding";
     selectedId.value = readyOpportunities.value[0]?.id ?? state.value.opportunities[0]?.id ?? "";
@@ -138,8 +182,8 @@ async function saveProfile(): Promise<void> {
     profileForm.apiKey = "";
     profileForm.name = "";
     profileNotice.value = saved?.readiness === "ready"
-      ? { tone: "success", title: "Model profile saved", detail: `${saved.name} is selected for cited onboarding and is available to the native harness. Your agent-runtime selection was not changed.` }
-      : { tone: "warning", title: "Profile saved—credential required", detail: `The profile is selected for onboarding, but ${saved?.provider ?? profileForm.provider} still needs a Keychain credential or environment variable before AI inference can run.` };
+      ? { tone: "success", title: "Model profile saved", detail: `${saved.name} is available when Native is selected. Your agent-runtime selection was not changed.` }
+      : { tone: "warning", title: "Profile saved—credential required", detail: `${saved?.provider ?? profileForm.provider} still needs a Keychain credential or environment variable before Native inference can run.` };
   } catch (cause) {
     profileNotice.value = { tone: "danger", title: "Model profile was not saved", detail: cause instanceof Error ? cause.message : "The model profile could not be saved." };
   } finally {
@@ -184,6 +228,38 @@ async function chooseRuntime(id: string): Promise<void> {
   }
 }
 
+function runtimeStatusLabel(runtime: AgentRuntimeStatus): string {
+  if (!runtime.available) return runtime.availability.replace("-", " ");
+  if (runtime.id === "native" || runtime.verification === "ready") return "ready";
+  if (runtime.verification === "failed") return "test failed";
+  return "installed · unverified";
+}
+
+function runtimeStatusTone(runtime: AgentRuntimeStatus): "success" | "warning" | "danger" | "neutral" {
+  if (runtime.id === "native" || runtime.verification === "ready") return "success";
+  if (runtime.verification === "failed") return "danger";
+  if (runtime.available || runtime.availability === "setup-required") return "warning";
+  return "neutral";
+}
+
+async function verifyAgentRuntime(runtime: AgentRuntimeStatus): Promise<void> {
+  if (runtime.id === "native") return;
+  testingRuntimeId.value = runtime.id;
+  runtimeNotice.value = null;
+  try {
+    const model = ai.value?.execution.runtimeId === runtime.id ? runtimeModel.value : "";
+    const result = await testAgentRuntime(runtime.id, model);
+    ai.value = result.controlPlane;
+    runtimeNotice.value = result.ok
+      ? { tone: "success", title: `${runtime.name} is ready`, detail: `The bounded read-only probe returned schema-valid JSON in ${result.durationMs}ms. No product evidence was sent.` }
+      : { tone: "danger", title: `${runtime.name} test failed`, detail: `${result.detail} Diagnostic: ${result.failureCode?.replaceAll("-", " ") || "unknown"}.` };
+  } catch (cause) {
+    runtimeNotice.value = { tone: "danger", title: `${runtime.name} test could not run`, detail: cause instanceof Error ? cause.message : "The runtime readiness test could not be completed." };
+  } finally {
+    testingRuntimeId.value = "";
+  }
+}
+
 async function discoverRuntimes(): Promise<void> {
   aiBusy.value = true;
   aiError.value = "";
@@ -193,18 +269,6 @@ async function discoverRuntimes(): Promise<void> {
     aiError.value = cause instanceof Error ? cause.message : "Local runtimes could not be inspected.";
   } finally {
     aiBusy.value = false;
-  }
-}
-
-async function refresh(): Promise<void> {
-  actionBusy.value = true;
-  error.value = "";
-  try {
-    state.value = await refreshWorkspace();
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : "The workspace could not be refreshed.";
-  } finally {
-    actionBusy.value = false;
   }
 }
 
@@ -250,6 +314,22 @@ async function togglePlaybook(id: string, enabled: boolean, intervalMinutes: num
     automationNotice.value = { tone: enabled ? "success" : "warning", title: enabled ? "Playbook resumed" : "Playbook paused", detail: enabled ? "The next due run may observe and prepare work." : "This playbook will not run until you resume it." };
   } catch (cause) {
     automationNotice.value = { tone: "danger", title: "Playbook could not be updated", detail: cause instanceof Error ? cause.message : "Try again." };
+  } finally {
+    automationBusyId.value = "";
+  }
+}
+
+async function deletePlaybook(playbook: DashboardState["automation"]["playbooks"][number]): Promise<void> {
+  const confirmed = window.confirm(`Delete “${playbook.name}”?\n\nIts schedule will stop and disappear from active evidence loops. Historical runs, decisions, and outcomes will remain in the local ledger.`);
+  if (!confirmed) return;
+  automationBusyId.value = playbook.id;
+  automationNotice.value = null;
+  try {
+    const result = await deleteAutomationPlaybook(playbook.id);
+    state.value = result.dashboard;
+    automationNotice.value = { tone: "success", title: "Evidence loop deleted", detail: "The active schedule was removed. Historical runs, decisions, and outcomes were preserved." };
+  } catch (cause) {
+    automationNotice.value = { tone: "danger", title: "Evidence loop was not deleted", detail: cause instanceof Error ? cause.message : "Try again after the current run finishes." };
   } finally {
     automationBusyId.value = "";
   }
@@ -397,7 +477,7 @@ async function inspectActionBoundary(adapter: ActionAdapterDescriptor): Promise<
   if (!capability) return;
   actionAdapterBusyId.value = adapter.id;
   try {
-    const product = state.value?.products[0];
+    const product = activeProduct.value ?? state.value?.products[0];
     const decision = await previewActionPolicy({ adapterId: adapter.id, capability, productId: product?.id, evidenceRefs: product ? [product.id] : ["preview"], purpose: `Preview the ${adapter.name} boundary.`, budgetLimit: 1 });
     automationNotice.value = {
       tone: decision.status === "blocked" ? "danger" : decision.status === "approval-required" ? "warning" : "success",
@@ -417,6 +497,7 @@ async function createProduct(input: OnboardProductInput): Promise<void> {
   try {
     const result = await onboardProduct(input);
     state.value = result.dashboard;
+    activeProductId.value = result.productId;
     signalForm.productId = result.productId;
     automationForm.productId = result.productId;
     selectedId.value = state.value.opportunities.find((item) => item.productId === result.productId)?.id ?? "";
@@ -428,6 +509,79 @@ async function createProduct(input: OnboardProductInput): Promise<void> {
     error.value = cause instanceof Error ? cause.message : "The product could not be onboarded.";
   } finally {
     onboardingBusy.value = false;
+  }
+}
+
+function openProject(productId: string, destination: View = "command"): void {
+  activeProductId.value = productId;
+  view.value = destination;
+}
+
+async function permanentlyDeleteProduct(product: DashboardState["products"][number]): Promise<void> {
+  const confirmation = window.prompt(`Permanently delete “${product.name}” and all of its local distribution data?\n\nThis removes product evidence, signals, opportunities, outcomes, connectors, evidence loops and runs, harness runs, project-linked actions, and ledger events. This cannot be undone.\n\nType DELETE to continue.`);
+  if (confirmation !== "DELETE") return;
+  productDeleteBusyId.value = product.id;
+  productNotice.value = null;
+  try {
+    const result = await deleteProduct(product.id);
+    state.value = result.dashboard;
+    if (activeProductId.value === product.id) activeProductId.value = state.value.products[0]?.id || "";
+    productNotice.value = { tone: "success", title: "Project permanently deleted", detail: `All local distribution data linked to ${product.name} was removed.` };
+  } catch (cause) {
+    productNotice.value = { tone: "danger", title: "Project was not deleted", detail: cause instanceof Error ? cause.message : "Try again after active work finishes." };
+  } finally {
+    productDeleteBusyId.value = "";
+  }
+}
+
+async function saveDevToKey(): Promise<void> {
+  devToNotice.value = null;
+  if (!devToApiKey.value.trim()) return;
+  devToBusy.value = true;
+  try {
+    state.value = await saveDevToCredential(devToApiKey.value);
+    devToApiKey.value = "";
+    devToNotice.value = { tone: "success", title: "DEV key verified", detail: "The credential is stored in macOS Keychain, never in the local SQLite ledger." };
+  } catch (cause) {
+    devToNotice.value = { tone: "danger", title: "DEV key was not saved", detail: cause instanceof Error ? cause.message : "DEV could not verify this credential." };
+  } finally {
+    devToBusy.value = false;
+  }
+}
+
+async function connectDevToSignals(): Promise<void> {
+  devToNotice.value = null;
+  if (!devToForm.productId || !devToForm.signalQuery.trim()) {
+    devToNotice.value = { tone: "danger", title: "Focused signal query required", detail: "Choose a project and describe the specific audience problem to observe on DEV." };
+    return;
+  }
+  devToBusy.value = true;
+  try {
+    const result = await connectDevTo(devToForm.productId, devToForm.signalQuery, devToForm.publishTags.split(","));
+    state.value = result.dashboard;
+    activeProductId.value = devToForm.productId;
+    devToNotice.value = result.imported
+      ? { tone: "success", title: "DEV observations are ready for review", detail: `${result.imported} public observation${result.imported === 1 ? "" : "s"} entered Signal Inbox. None became evidence automatically.` }
+      : { tone: "warning", title: "DEV is connected", detail: "No new observations were found. Existing candidates and decisions were preserved." };
+  } catch (cause) {
+    devToNotice.value = { tone: "danger", title: "DEV signals could not be connected", detail: cause instanceof Error ? cause.message : "The public DEV search failed." };
+  } finally {
+    devToBusy.value = false;
+  }
+}
+
+async function publishToDev(opportunity: Opportunity): Promise<void> {
+  if (!window.confirm(`Publish the approved draft “${opportunity.title}” to DEV now? This is a real public action.`)) return;
+  actionBusy.value = true;
+  campaignNotice.value = null;
+  try {
+    const result = await executeOpportunity(opportunity.id);
+    state.value = result.dashboard;
+    campaignNotice.value = { tone: "success", title: "Published to DEV", detail: `Execution receipt captured: ${result.receipt.externalUrl}. Outcome refresh is now automatic when the workspace refreshes.` };
+  } catch (cause) {
+    campaignNotice.value = { tone: "danger", title: "DEV publication failed", detail: cause instanceof Error ? cause.message : "DEV did not return a confirmed publication receipt." };
+  } finally {
+    actionBusy.value = false;
   }
 }
 
@@ -681,6 +835,7 @@ function selectOpportunity(opportunity: Opportunity): void {
 }
 
 function reviewAutomationRun(run: AutomationRun): void {
+  activeProductId.value = run.productId;
   selectedId.value = run.createdOpportunityIds[0] ?? selectedId.value;
   view.value = "command";
 }
@@ -696,8 +851,8 @@ function formatDate(value: string): string {
 const navItems: Array<{ id: View; label: string; icon: string; section?: string }> = [
   { id: "command", label: "Command Center", icon: "dashboard", section: "OPERATE" },
   { id: "automation", label: "Automation", icon: "refresh" },
-  { id: "onboarding", label: "Add Product", icon: "plus", section: "UNDERSTAND" },
-  { id: "memory", label: "Product Memory", icon: "boxes" },
+  { id: "onboarding", label: "Add Project", icon: "plus", section: "UNDERSTAND" },
+  { id: "memory", label: "Projects", icon: "boxes" },
   { id: "signals", label: "Signal Inbox", icon: "inbox" },
   { id: "audience", label: "Audience Map", icon: "user" },
   { id: "campaigns", label: "Campaigns", icon: "send", section: "EXECUTE" },
@@ -711,21 +866,23 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 <template>
   <div class="app-stage" data-osx-theme="panther">
     <osx-app-shell
-      app-title="Distribution-OS"
+      :app-title="navItems.find((item) => item.id === view)?.label || 'Command Center'"
       sidebar-width="244px"
       inspector-width="410px"
       :inspector-open="view === 'command'"
       label="Distribution-OS command workspace"
     >
       <div slot="toolbar" class="toolbar-actions">
-        <osx-badge tone="success" size="small" dot>LOCAL-FIRST</osx-badge>
+        <label v-if="state?.products.length" class="project-switcher"><span>Project</span>
+          <select v-model="activeProductId" aria-label="Active project">
+            <option value="">All Projects</option>
+            <option v-for="product in state.products" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option>
+          </select>
+        </label>
         <button v-if="ai" class="engine-chip" title="Open AI Harness" @click="view = 'harness'">
           <osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" :size="14"></osx-icon>
-          {{ activeRuntime?.name ?? "AI setup" }}<span v-if="activeModelProfile && ai.execution.runtimeId === 'native'">· {{ activeModelProfile.model }}</span>
+          {{ ai.execution.runtimeId === 'native' ? 'Native' : activeRuntime?.name ?? 'AI setup' }}<span v-if="activeModelProfile && ai.execution.runtimeId === 'native'">· {{ activeModelProfile.model }}</span>
         </button>
-        <span v-if="state" class="toolbar-summary">{{ state.metrics.readyMoves }} moves · {{ state.metrics.evidenceItems }} evidence items</span>
-        <osx-button v-if="state && !state.onboarding.required" size="small" icon="plus" @click="view = 'onboarding'">Add product</osx-button>
-        <osx-button size="small" icon="refresh" :loading="actionBusy" @click="refresh">Refresh workspace</osx-button>
       </div>
 
       <nav slot="sidebar" class="source-list" aria-label="Distribution workspace">
@@ -738,8 +895,8 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <button :class="['nav-item', { active: view === item.id }]" :aria-current="view === item.id ? 'page' : undefined" @click="view = item.id">
             <osx-icon :name="item.icon" :size="18"></osx-icon>
             <span>{{ item.label }}</span>
-            <b v-if="item.id === 'command' && state">{{ state.metrics.readyMoves }}</b>
-            <b v-else-if="item.id === 'signals' && state && state.metrics.newSignals">{{ state.metrics.newSignals }}</b>
+            <b v-if="item.id === 'command' && state">{{ readyOpportunities.length }}</b>
+            <b v-else-if="item.id === 'signals' && state && newSignals.length">{{ newSignals.length }}</b>
             <b v-else-if="item.id === 'campaigns' && approved.length">{{ approved.length }}</b>
           </button>
         </template>
@@ -771,17 +928,17 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <header class="command-hero">
           <div>
             <p class="eyebrow">TODAY'S DISTRIBUTION BRIEF</p>
-            <h1>{{ state.metrics.readyMoves === 0 ? "No forced activity." : state.metrics.readyMoves === 1 ? "One move worth making." : `${state.metrics.readyMoves} moves worth making.` }}</h1>
-            <p>Each move is grounded in product evidence, matched to an audience, and bounded by your channel policy.</p>
+            <h1>{{ readyOpportunities.length === 0 ? "No forced activity." : readyOpportunities.length === 1 ? "One move worth making." : `${readyOpportunities.length} moves worth making.` }}</h1>
+            <p><strong>{{ activeProduct?.name || "All Projects" }}</strong> · Each move is grounded in product evidence, matched to an audience, and bounded by your channel policy.</p>
           </div>
-          <div class="system-score"><span>Evidence confidence</span><strong>{{ state.metrics.analysisConfidence }}%</strong><small>Derived from source coverage</small></div>
+          <div class="system-score"><span>Evidence confidence</span><strong>{{ scopedConfidence }}%</strong><small>Derived from source coverage</small></div>
         </header>
 
         <section class="metric-grid" aria-label="Distribution metrics">
-          <article><span>Ready moves</span><strong>{{ state.metrics.readyMoves }}</strong><small>Ranked by usefulness</small></article>
-          <article><span>Approved</span><strong>{{ state.metrics.approvedMoves }}</strong><small>Waiting for execution</small></article>
-          <article><span>Product evidence</span><strong>{{ state.metrics.evidenceItems }}</strong><small>Across {{ state.products.length }} product{{ state.products.length === 1 ? "" : "s" }}</small></article>
-          <article><span>Signal sources</span><strong>{{ state.metrics.connectedSources }}</strong><small>Read-only · human reviewed</small></article>
+          <article><span>Ready moves</span><strong>{{ readyOpportunities.length }}</strong><small>Ranked by usefulness</small></article>
+          <article><span>Approved</span><strong>{{ approved.length }}</strong><small>Waiting for execution</small></article>
+          <article><span>Project evidence</span><strong>{{ scopedEvidenceCount }}</strong><small>Across {{ scopedProducts.length }} project{{ scopedProducts.length === 1 ? "" : "s" }}</small></article>
+          <article><span>Signal sources</span><strong>{{ scopedConnectors.length + (devToChannel?.connector.configured && (!activeProductId || devToChannel.connector.productId === activeProductId) ? 1 : 0) }}</strong><small>Read-only · human reviewed</small></article>
         </section>
 
         <section class="queue-section">
@@ -815,7 +972,8 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             </osx-empty-state>
             <osx-empty-state v-else-if="!readyOpportunities.length" icon="check" title="Today's queue is clear">
               Approved and skipped work remains available in Campaigns and the Journal. Generate another evidence-grounded plan when you are ready to learn from the next move.
-              <osx-button slot="actions" variant="primary" icon="sparkle" :loading="planBusy" @click="runDistributionPlan(state.products[0].id)">Generate next plan</osx-button>
+              <osx-button v-if="activeProduct" slot="actions" variant="primary" icon="sparkle" :loading="planBusy" @click="runDistributionPlan(activeProduct.id)">Generate next plan</osx-button>
+              <osx-button v-else slot="actions" variant="primary" icon="boxes" @click="view = 'memory'">Choose a project</osx-button>
             </osx-empty-state>
           </div>
         </section>
@@ -833,10 +991,10 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </osx-alert>
 
         <section class="automation-metrics" aria-label="Automation status">
-          <article><span>Active loops</span><strong>{{ state.automation.playbooks.filter((item) => item.enabled).length }}</strong><small>{{ state.automation.playbooks.length }} configured</small></article>
-          <article><span>Awaiting judgment</span><strong>{{ state.automation.runs.filter((item) => item.status === 'waiting-approval').length }}</strong><small>Prepared, never published</small></article>
+          <article><span>Active loops</span><strong>{{ scopedPlaybooks.filter((item) => item.enabled).length }}</strong><small>{{ scopedPlaybooks.length }} configured</small></article>
+          <article><span>Awaiting judgment</span><strong>{{ scopedAutomationRuns.filter((item) => item.status === 'waiting-approval').length }}</strong><small>Prepared, never published</small></article>
           <article><span>Scheduled public execution</span><strong>OFF</strong><small>One-time approval only</small></article>
-          <article><span>Action budget</span><strong>{{ state.automation.playbooks.reduce((sum, item) => sum + (item.enabled ? item.maxActionsPerRun : 0), 0) }}</strong><small>Maximum prepared per cycle</small></article>
+          <article><span>Action budget</span><strong>{{ scopedPlaybooks.reduce((sum, item) => sum + (item.enabled ? item.maxActionsPerRun : 0), 0) }}</strong><small>Maximum prepared per cycle</small></article>
         </section>
 
         <section v-if="state.products.length" class="automation-create-panel">
@@ -851,14 +1009,14 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </section>
         <osx-empty-state v-else class="page-empty-state" icon="refresh" title="Automation needs product truth first">Onboard a product before scheduling decisions. The kernel refuses to automate without bounded evidence and an explicit objective.<osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button></osx-empty-state>
 
-        <section v-if="state.automation.playbooks.length" class="automation-section">
-          <div class="section-heading"><div><p class="eyebrow">PLAYBOOKS</p><h2>Governed loops</h2><p>Schedules survive service restarts through the local ledger. A duplicate trigger cannot create a duplicate run.</p></div><osx-badge>{{ state.automation.playbooks.length }} configured</osx-badge></div>
+        <section v-if="scopedPlaybooks.length" class="automation-section">
+          <div class="section-heading"><div><p class="eyebrow">PLAYBOOKS</p><h2>Governed loops</h2><p>Schedules survive service restarts through the local ledger. A duplicate trigger cannot create a duplicate run.</p></div><osx-badge>{{ scopedPlaybooks.length }} configured</osx-badge></div>
           <div class="playbook-grid">
-            <article v-for="playbook in state.automation.playbooks" :key="playbook.id" :class="['playbook-card', { paused: !playbook.enabled }]">
+            <article v-for="playbook in scopedPlaybooks" :key="playbook.id" :class="['playbook-card', { paused: !playbook.enabled }]">
               <header><span class="playbook-icon"><osx-icon name="refresh" :size="20"></osx-icon></span><div><h3>{{ playbook.name }}</h3><small>{{ playbook.productName }}</small></div><osx-badge :tone="playbook.enabled ? 'success' : 'warning'" dot>{{ playbook.enabled ? "Active" : "Paused" }}</osx-badge></header>
               <dl><div><dt>Cadence</dt><dd>{{ playbook.intervalMinutes >= 1440 ? `${playbook.intervalMinutes / 1440} day${playbook.intervalMinutes === 1440 ? '' : 's'}` : `${playbook.intervalMinutes / 60} hour${playbook.intervalMinutes === 60 ? '' : 's'}` }}</dd></div><div><dt>Budget</dt><dd>{{ playbook.maxActionsPerRun }} move{{ playbook.maxActionsPerRun === 1 ? "" : "s" }}</dd></div><div><dt>Approval</dt><dd>Always</dd></div></dl>
               <p>{{ playbook.lastRunAt ? `Last run ${formatDate(playbook.lastRunAt)} at ${formatTime(playbook.lastRunAt)}` : "Not run yet" }}<br />{{ playbook.enabled ? `Next due ${formatDate(playbook.nextRunAt)} at ${formatTime(playbook.nextRunAt)}` : "Schedule is paused" }}</p>
-              <footer><osx-button size="small" :disabled="Boolean(automationBusyId)" @click="togglePlaybook(playbook.id, !playbook.enabled, playbook.intervalMinutes, playbook.maxActionsPerRun)">{{ playbook.enabled ? "Pause" : "Resume" }}</osx-button><osx-button size="small" variant="primary" icon="play" :loading="automationBusyId === playbook.id" :disabled="Boolean(automationBusyId) || !playbook.enabled || state.automation.control.paused" @click="runPlaybook(playbook.id)">Run now</osx-button></footer>
+              <footer><osx-button size="small" variant="danger" icon="trash" :disabled="Boolean(automationBusyId)" @click="deletePlaybook(playbook)">Delete loop</osx-button><span class="playbook-primary-actions"><osx-button size="small" :disabled="Boolean(automationBusyId)" @click="togglePlaybook(playbook.id, !playbook.enabled, playbook.intervalMinutes, playbook.maxActionsPerRun)">{{ playbook.enabled ? "Pause" : "Resume" }}</osx-button><osx-button size="small" variant="primary" icon="play" :loading="automationBusyId === playbook.id" :disabled="Boolean(automationBusyId) || !playbook.enabled || state.automation.control.paused" @click="runPlaybook(playbook.id)">Run now</osx-button></span></footer>
             </article>
           </div>
         </section>
@@ -911,9 +1069,9 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </section>
 
         <section class="automation-section">
-          <div class="section-heading"><div><p class="eyebrow">EXECUTION LEDGER</p><h2>Every cycle is inspectable</h2><p>Triggers, steps, failures, prepared moves, and approval waits are durable. Raw prompts, credentials, and hidden reasoning are not stored.</p></div><osx-badge>{{ state.automation.runs.length }} recent</osx-badge></div>
-          <div v-if="state.automation.runs.length" class="automation-run-list">
-            <article v-for="run in state.automation.runs" :key="run.id">
+          <div class="section-heading"><div><p class="eyebrow">EXECUTION LEDGER</p><h2>Every cycle is inspectable</h2><p>Triggers, steps, failures, prepared moves, and approval waits are durable. Raw prompts, credentials, and hidden reasoning are not stored.</p></div><osx-badge>{{ scopedAutomationRuns.length }} recent</osx-badge></div>
+          <div v-if="scopedAutomationRuns.length" class="automation-run-list">
+            <article v-for="run in scopedAutomationRuns" :key="run.id">
               <header><div><strong>{{ run.playbookName }}</strong><small>{{ run.productName }} · {{ run.trigger }} · {{ formatDate(run.createdAt) }} at {{ formatTime(run.createdAt) }}</small></div><osx-badge :tone="run.status === 'waiting-approval' || run.status === 'completed' ? 'success' : run.status === 'failed' ? 'danger' : 'warning'" dot>{{ run.status.replace('-', ' ') }}</osx-badge></header>
               <p>{{ run.summary || run.error || "Run in progress" }}</p>
               <ol><li v-for="step in run.steps" :key="step.id"><span :class="['run-step-dot', step.status]"></span><div><strong>{{ step.name }}</strong><small>{{ step.detail }}</small></div></li></ol>
@@ -925,37 +1083,47 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       </main>
 
       <main v-else-if="state && view === 'memory'" class="workspace-page">
-        <header class="page-header-with-action"><div><p class="eyebrow">PRODUCT MEMORY</p><h1>The truth Distribution-OS can use.</h1><p>Intent, public claims, and implementation evidence remain distinct.</p></div><osx-button variant="primary" icon="plus" @click="view = 'onboarding'">Add product</osx-button></header>
+        <header class="page-header-with-action"><div><p class="eyebrow">ALL PROJECTS</p><h1>Your distribution portfolio.</h1><p>Choose a project to scope recommendations, evidence, execution, and learning. Evidence classes remain distinct inside each project.</p></div><osx-button variant="primary" icon="plus" @click="view = 'onboarding'">Add project</osx-button></header>
         <div class="product-grid">
-          <article v-for="product in state.products" :key="product.id" class="product-card">
+          <article v-for="product in state.products" :key="product.id" :class="['product-card', { active: activeProductId === product.id }]">
             <div><span class="product-monogram">{{ product.name.charAt(0) }}</span><osx-badge tone="success" size="small">{{ product.confidence }}% evidence</osx-badge></div>
             <h2>{{ product.name }}</h2><p>{{ product.description }}</p>
             <dl class="product-brief"><div><dt>Audience</dt><dd>{{ product.audience }}</dd></div><div><dt>Objective</dt><dd>{{ product.objective }}</dd></div></dl>
-            <footer><strong>{{ product.evidenceCount }} evidence items · {{ product.stage }}</strong><span class="product-actions"><osx-link v-if="product.websiteUrl || product.repositoryUrl" :href="product.websiteUrl || product.repositoryUrl" external>Open source</osx-link><osx-button size="small" icon="sparkle" :loading="planBusy" @click="runDistributionPlan(product.id)">Generate plan</osx-button></span></footer>
+            <footer>
+              <strong>{{ product.evidenceCount }} evidence items · {{ product.stage }}</strong>
+              <div class="product-actions">
+                <osx-button size="small" variant="primary" icon="dashboard" @click="openProject(product.id)">Open workspace</osx-button>
+                <span class="product-secondary-actions">
+                  <osx-link v-if="product.websiteUrl || product.repositoryUrl" :href="product.websiteUrl || product.repositoryUrl" external>Open source</osx-link>
+                  <osx-button size="small" icon="sparkle" :loading="planBusy" :disabled="Boolean(productDeleteBusyId)" @click="runDistributionPlan(product.id)">Generate plan</osx-button>
+                  <osx-button class="product-delete-action" size="small" variant="danger" icon="trash" :loading="productDeleteBusyId === product.id" :disabled="Boolean(productDeleteBusyId)" @click="permanentlyDeleteProduct(product)">Delete</osx-button>
+                </span>
+              </div>
+            </footer>
           </article>
-          <osx-empty-state v-if="!state.products.length" class="page-empty-state" icon="boxes" title="Product memory is empty">
+          <osx-empty-state v-if="!state.products.length" class="page-empty-state" icon="boxes" title="No distribution projects yet">
             Start with whatever explains the product today. Code is useful, but it is not required.
-            <osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Add the first product</osx-button>
+            <osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Add the first project</osx-button>
           </osx-empty-state>
-          <button v-else class="add-product-card" @click="view = 'onboarding'"><osx-icon name="plus" :size="24"></osx-icon><strong>Add another product</strong><span>Repository, URL, document, or pasted context</span></button>
+          <button v-else class="add-product-card" @click="view = 'onboarding'"><osx-icon name="plus" :size="24"></osx-icon><strong>Add another project</strong><span>Repository, URL, document, or pasted context</span></button>
         </div>
       </main>
 
       <main v-else-if="state && view === 'signals'" class="workspace-page">
         <header class="page-header-with-action">
           <div><p class="eyebrow">SIGNAL INBOX</p><h1>Observe first. Infer carefully.</h1><p>Potential audience evidence stays quarantined until you inspect it. Accepting a signal makes the bounded observation citable; it never turns one comment into a trend.</p></div>
-          <osx-badge :tone="newSignals.length ? 'warning' : 'success'" dot>{{ newSignals.length }} awaiting review</osx-badge>
+          <osx-badge class="review-count-badge" :tone="newSignals.length ? 'warning' : 'success'" dot>{{ newSignals.length ? `${newSignals.length} awaiting review` : "Inbox clear" }}</osx-badge>
         </header>
 
         <section v-if="state.products.length" class="audience-signal-panel signal-capture-panel">
-          <div class="section-heading"><div><p class="eyebrow">READ-ONLY SOURCE</p><h2>Connect GitHub issues</h2><p>Import recent repository issues as candidates. Pull requests are excluded, duplicate issues are ignored, and every observation still requires your review.</p></div><osx-badge :tone="state.connectors.length ? 'success' : 'info'" dot>{{ state.connectors.length }} connected</osx-badge></div>
+          <div class="section-heading"><div><p class="eyebrow">READ-ONLY SOURCE</p><h2>Connect GitHub issues</h2><p>Import recent repository issues as candidates. Pull requests are excluded, duplicate issues are ignored, and every observation still requires your review.</p></div><osx-badge :tone="scopedConnectors.length ? 'success' : 'info'" dot>{{ scopedConnectors.length }} connected</osx-badge></div>
           <form class="connector-form" @submit.prevent="connectGitHub">
-            <label>Product<select :value="connectorForm.productId" @change="selectConnectorProduct(($event.target as HTMLSelectElement).value)"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
+            <label>Project<select :value="connectorForm.productId" @change="selectConnectorProduct(($event.target as HTMLSelectElement).value)"><option v-for="product in scopedProducts" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
             <label>GitHub repository <small>Public repos work without a token</small><input v-model="connectorForm.repository" inputmode="url" placeholder="owner/repository or https://github.com/…" /></label>
             <osx-button type="button" variant="primary" icon="git-branch" :loading="connectorBusyId === 'new'" :disabled="Boolean(connectorBusyId) || !connectorForm.repository.trim()" @click="connectGitHub">Connect & import</osx-button>
           </form>
-          <div v-if="state.connectors.length" class="connector-list">
-            <article v-for="connector in state.connectors" :key="connector.id">
+          <div v-if="scopedConnectors.length" class="connector-list">
+            <article v-for="connector in scopedConnectors" :key="connector.id">
               <span class="connector-mark"><osx-icon name="git-branch" :size="20"></osx-icon></span>
               <div><strong>{{ connector.name }}</strong><small>{{ connector.productName }} · {{ connector.lastSyncedAt ? `synced ${formatDate(connector.lastSyncedAt)} at ${formatTime(connector.lastSyncedAt)}` : 'not synced' }} · {{ connector.importedCount }} imported</small><p v-if="connector.lastError">{{ connector.lastError }}</p></div>
               <osx-badge :tone="connector.status === 'connected' ? 'success' : 'danger'" dot>{{ connector.status }}</osx-badge>
@@ -968,7 +1136,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         <section v-if="state.products.length" class="audience-signal-panel signal-capture-panel">
           <div class="section-heading"><div><p class="eyebrow">MANUAL CAPTURE</p><h2>Add a bounded observation</h2><p>Paste only the relevant public discussion context or import its URL when no connector exists.</p></div><osx-badge tone="info">Manual source</osx-badge></div>
           <form class="signal-form" @submit.prevent="captureSignal">
-            <label>Product<select v-model="signalForm.productId"><option v-for="product in state.products" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
+            <label>Project<select v-model="signalForm.productId"><option v-for="product in scopedProducts" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
             <label>Source type<select v-model="signalForm.type"><option value="text">Paste discussion context</option><option value="url">Public URL</option></select></label>
             <label>Source label <small>Make citations recognizable</small><input v-model="signalForm.label" placeholder="Example: Hacker News launch discussion" /></label>
             <label class="wide">{{ signalForm.type === 'url' ? 'Public discussion URL' : 'What did the audience say or ask?' }}
@@ -987,7 +1155,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <div v-if="newSignals.length" class="signal-inbox-list">
             <article v-for="signal in newSignals" :key="signal.id" class="signal-candidate-card">
               <span class="signal-icon"><osx-icon :name="signal.kind === 'question' ? 'help-circle' : signal.kind === 'pain' ? 'alert-circle' : signal.kind === 'request' ? 'message-circle' : 'search'" :size="19"></osx-icon></span>
-              <div class="signal-candidate-copy"><div><osx-badge tone="info" size="small">{{ signal.kind }}</osx-badge><osx-badge v-if="signal.origin === 'github'" size="small">GitHub</osx-badge><span>{{ signal.productName }} · {{ formatDate(signal.capturedAt) }}</span></div><h3>{{ signal.title }}</h3><p>{{ signal.summary }}</p><small>{{ signal.reason }}</small></div>
+              <div class="signal-candidate-copy"><div><osx-badge tone="info" size="small">{{ signal.kind }}</osx-badge><osx-badge v-if="signal.origin === 'github'" size="small">GitHub</osx-badge><osx-badge v-else-if="signal.origin === 'devto'" size="small">DEV</osx-badge><span>{{ signal.productName }} · {{ formatDate(signal.capturedAt) }}</span></div><h3>{{ signal.title }}</h3><p>{{ signal.summary }}</p><small>{{ signal.reason }}</small></div>
               <div class="signal-relevance"><strong>{{ signal.relevance }}</strong><span>RELEVANCE</span></div>
               <footer><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Inspect source</osx-link><span v-else>Founder-supplied excerpt</span><div><osx-button size="small" :disabled="Boolean(signalActionId)" @click="reviewSignal(signal.id, 'dismiss')">Dismiss</osx-button><osx-button size="small" variant="primary" icon="check" :loading="signalActionId === signal.id" :disabled="Boolean(signalActionId)" @click="reviewSignal(signal.id, 'accept')">Accept as evidence</osx-button></div></footer>
             </article>
@@ -1003,26 +1171,26 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 
       <main v-else-if="state && view === 'audience'" class="workspace-page">
         <header><p class="eyebrow">AUDIENCE MAP</p><h1>Problems, people, and places.</h1><p>The system optimizes for relevance—not reach without context.</p></header>
-        <div v-if="state.products.length" class="audience-grid">
-          <article v-for="product in state.products" :key="product.id"><osx-icon name="user" :size="24"></osx-icon><h2>{{ product.audience }}</h2><p>{{ product.name }} is currently optimizing for: {{ product.objective }}</p><div><osx-badge>{{ product.stage }}</osx-badge><osx-badge tone="info">{{ product.confidence }}% evidence</osx-badge></div></article>
+        <div v-if="scopedProducts.length" class="audience-grid">
+          <article v-for="product in scopedProducts" :key="product.id"><osx-icon name="user" :size="24"></osx-icon><h2>{{ product.audience }}</h2><p>{{ product.name }} is currently optimizing for: {{ product.objective }}</p><div><osx-badge>{{ product.stage }}</osx-badge><osx-badge tone="info">{{ product.confidence }}% evidence</osx-badge></div></article>
         </div>
         <osx-empty-state v-else class="page-empty-state" icon="user" title="No audience has been established">Audience hypotheses appear only after a product has been onboarded and reviewed.<osx-button slot="actions" variant="primary" icon="plus" @click="view = 'onboarding'">Onboard a product</osx-button></osx-empty-state>
         <section v-if="state.products.length" class="audience-signal-panel">
-          <div class="section-heading"><div><p class="eyebrow">ACCEPTED AUDIENCE EVIDENCE</p><h2>Observations allowed into the loop.</h2><p>These signals passed human review. They remain bounded observations and are never represented as verified demand or a representative trend.</p></div><span class="heading-actions"><osx-badge tone="info">{{ state.audienceSignals?.length || 0 }} accepted</osx-badge><osx-button size="small" icon="inbox" @click="view = 'signals'">Open Signal Inbox</osx-button></span></div>
-          <div v-if="state.audienceSignals?.length" class="signal-list">
-            <article v-for="signal in state.audienceSignals" :key="signal.id"><span class="signal-icon"><osx-icon :name="signal.sourceType === 'url' ? 'globe' : 'message-circle'" :size="18"></osx-icon></span><div><strong>{{ signal.title }}</strong><p>{{ signal.summary }}</p><small>{{ signal.productName }} · {{ formatDate(signal.occurredAt) }} · {{ signal.sourceUrl ? 'public source' : 'founder supplied' }}</small></div><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Open source</osx-link></article>
+          <div class="section-heading"><div><p class="eyebrow">ACCEPTED AUDIENCE EVIDENCE</p><h2>Observations allowed into the loop.</h2><p>These signals passed human review. They remain bounded observations and are never represented as verified demand or a representative trend.</p></div><span class="heading-actions"><osx-badge tone="info">{{ scopedAudienceSignals.length }} accepted</osx-badge><osx-button size="small" icon="inbox" @click="view = 'signals'">Open Signal Inbox</osx-button></span></div>
+          <div v-if="scopedAudienceSignals.length" class="signal-list">
+            <article v-for="signal in scopedAudienceSignals" :key="signal.id"><span class="signal-icon"><osx-icon :name="signal.sourceType === 'url' ? 'globe' : 'message-circle'" :size="18"></osx-icon></span><div><strong>{{ signal.title }}</strong><p>{{ signal.summary }}</p><small>{{ signal.productName }} · {{ formatDate(signal.occurredAt) }} · {{ signal.sourceUrl ? 'public source' : 'founder supplied' }}</small></div><osx-link v-if="signal.sourceUrl" :href="signal.sourceUrl" external>Open source</osx-link></article>
           </div>
           <osx-empty-state v-else icon="message-circle" title="No accepted audience evidence yet">Product evidence explains what you built. Audience evidence explains what people are discussing. Capture and review one real observation before asking the agent to infer where to contribute.<osx-button slot="actions" variant="primary" icon="inbox" @click="view = 'signals'">Open Signal Inbox</osx-button></osx-empty-state>
         </section>
       </main>
 
       <main v-else-if="state && view === 'campaigns'" class="workspace-page">
-        <header><p class="eyebrow">CAMPAIGNS</p><h1>Approved work awaiting execution.</h1><p>These contributions passed review. Execute them manually, then record what actually happened so the next plan can learn.</p></header>
+        <header><p class="eyebrow">CAMPAIGNS</p><h1>Approved work awaiting execution.</h1><p>Manual channels remain founder-owned. DEV can publish one approved draft through a separate confirmed action and then capture measured outcomes.</p></header>
         <osx-alert v-if="campaignNotice" :tone="campaignNotice.tone" :title="campaignNotice.title" dismissible @dismiss="campaignNotice = null">{{ campaignNotice.detail }}</osx-alert>
         <section class="data-panel">
           <article v-for="opportunity in approved" :key="opportunity.id" class="campaign-artifact">
             <header class="campaign-row">
-              <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" icon="copy" @click="copyCampaignDraft(opportunity)">{{ copiedOpportunityId === opportunity.id ? "Copied" : "Copy draft" }}</osx-button><osx-button size="small" @click="decide('restore', opportunity)">Return to queue</osx-button><osx-button size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
+              <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" icon="copy" @click="copyCampaignDraft(opportunity)">{{ copiedOpportunityId === opportunity.id ? "Copied" : "Copy draft" }}</osx-button><osx-button size="small" @click="decide('restore', opportunity)">Return to queue</osx-button><osx-button v-if="opportunity.channelId === 'devto'" size="small" variant="primary" icon="send" :disabled="!devToChannel?.connector.authenticated" :loading="actionBusy" @click="publishToDev(opportunity)">Publish to DEV</osx-button><osx-button v-else size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
             </header>
             <pre class="campaign-draft">{{ opportunity.draftCopy }}</pre>
           </article>
@@ -1035,10 +1203,17 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           </form>
           <osx-empty-state v-if="!approved.length" icon="send" title="Nothing approved for execution">Review a move in the Command Center. Approved work appears here; Distribution-OS does not publish it automatically.</osx-empty-state>
         </section>
+        <section v-if="published.length" class="data-panel">
+          <div class="section-heading"><div><p class="eyebrow">EXECUTED</p><h2>Receipts and measured outcomes</h2><p>Connector observations are snapshots, not inferred attribution.</p></div><osx-badge>{{ published.length }} published</osx-badge></div>
+          <article v-for="opportunity in published" :key="opportunity.id" class="campaign-artifact">
+            <header class="campaign-row"><span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Published</osx-badge><osx-link v-if="opportunity.execution?.externalUrl" :href="opportunity.execution.externalUrl" external>Open receipt</osx-link></header>
+            <div class="outcome-summary"><span v-for="outcome in opportunity.outcomes" :key="outcome.metric"><strong>{{ outcome.value }}</strong> {{ outcome.metric }}</span></div>
+          </article>
+        </section>
       </main>
 
       <main v-else-if="state && view === 'channels'" class="workspace-page">
-        <header><p class="eyebrow">CHANNEL POLICY</p><h1>Decide how work reaches each channel.</h1><p>Set planning limits and whether a channel produces drafts or requires approval. Publishing connections are not enabled yet.</p></header>
+        <header><p class="eyebrow">CHANNEL POLICY</p><h1>Decide how work reaches each channel.</h1><p>Set planning limits and connection boundaries. DEV is the first narrow real connector; every public action still requires approval and a separate confirmation.</p></header>
         <section class="channel-grid">
           <article v-for="channel in state.channels" :key="channel.id" class="channel-card">
             <header><span class="channel-mark">{{ channel.name.charAt(0) }}</span><div><h2>{{ channel.name }}</h2><p>{{ channel.handle }}</p></div><osx-badge :tone="channel.connected ? 'success' : channel.status === 'manual' ? 'warning' : 'neutral'" dot>{{ channel.status }}</osx-badge></header>
@@ -1046,11 +1221,28 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             <form v-if="channelEditingId === channel.id" class="channel-policy-form" @submit.prevent="saveChannel(channel)">
               <label>Review mode<select v-model="channelForm.mode"><option value="draft">Draft only</option><option value="approval">Human approval</option></select></label>
               <label>Daily limit<input v-model.number="channelForm.dailyLimit" type="number" min="0" max="100" step="1" /></label>
-              <small>This governs planning and review only. Distribution-OS does not currently publish to this channel.</small>
+              <small>{{ channel.id === 'devto' ? 'DEV publishing remains approval-gated and limited to one confirmed contribution at a time.' : 'This governs planning and review only. Distribution-OS does not publish to this channel.' }}</small>
               <footer><osx-button size="small" @click="channelEditingId = ''">Cancel</osx-button><osx-button type="button" size="small" variant="primary" icon="check" :loading="actionBusy" @click="saveChannel(channel)">Save policy</osx-button></footer>
             </form>
             <footer v-else><osx-toggle :checked="channel.connected" disabled>{{ channel.connected ? 'Connection enabled' : 'Not connected' }}</osx-toggle><osx-button size="small" icon="settings" @click="editChannel(channel)">Configure policy</osx-button></footer>
           </article>
+        </section>
+        <section v-if="state.products.length" class="devto-connector-panel">
+          <div class="section-heading"><div><p class="eyebrow">FIRST REAL CONNECTOR · DEV</p><h2>Connect one evidence-to-outcome loop.</h2><p>Public search imports bounded observations into Signal Inbox. Nothing influences planning until you accept it as evidence.</p></div><osx-badge :tone="devToChannel?.connector.configured ? 'success' : 'info'" dot>{{ devToChannel?.connector.configured ? 'Signals connected' : 'Read only' }}</osx-badge></div>
+          <div class="devto-credential-panel">
+            <div><strong>1 · Unlock founder-approved publishing</strong><p>Public signal reading needs no key. Publishing and authenticated outcome capture do. Create a key in <a href="https://dev.to/settings/extensions" target="_blank" rel="noreferrer">DEV Settings → Extensions</a>; Distribution-OS verifies it before storing it in macOS Keychain.</p></div>
+            <osx-badge v-if="devToChannel?.connector.authenticated" tone="success" dot>{{ devToChannel.connector.credentialSource }} credential</osx-badge>
+            <label>DEV API key<input v-model="devToApiKey" type="password" autocomplete="off" placeholder="Paste key from DEV" /></label>
+            <osx-button variant="primary" icon="lock" :loading="devToBusy" :disabled="!devToApiKey.trim()" @click="saveDevToKey">Verify & save securely</osx-button>
+          </div>
+          <form class="devto-form" @submit.prevent="connectDevToSignals">
+            <strong>2 · Connect project-specific signals</strong>
+            <label>Project<select v-model="devToForm.productId"><option v-for="product in scopedProducts" :key="product.id" :value="product.id">{{ productOptionLabel(product) }}</option></select></label>
+            <label>Focused audience problem<input v-model="devToForm.signalQuery" maxlength="120" placeholder="Example: open source maintainer distribution" /></label>
+            <label>Publish tags · up to 4<input v-model="devToForm.publishTags" placeholder="opensource, productivity" /></label>
+            <footer><span>The query is scoped to the selected project. The credential is never stored in SQLite.</span><osx-button type="button" variant="primary" icon="refresh" :loading="devToBusy" :disabled="!devToForm.productId || !devToForm.signalQuery.trim()" @click="connectDevToSignals">Connect & sync signals</osx-button></footer>
+          </form>
+          <osx-alert v-if="devToNotice" :tone="devToNotice.tone" :title="devToNotice.title" dismissible @dismiss="devToNotice = null">{{ devToNotice.detail }}</osx-alert>
         </section>
         <osx-alert v-if="channelNotice" :tone="channelNotice.tone" :title="channelNotice.title" dismissible @dismiss="channelNotice = null">{{ channelNotice.detail }}</osx-alert>
       </main>
@@ -1058,14 +1250,14 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       <main v-else-if="state && view === 'journal'" class="workspace-page">
         <header><p class="eyebrow">DISTRIBUTION JOURNAL</p><h1>The system remembers what happened.</h1><p>Decisions, executions, outcomes, and lessons form the feedback loop.</p></header>
         <ol class="journal-list">
-          <li v-for="event in state.products.length ? state.recentEvents : []" :key="event.id"><span class="timeline-dot"></span><time>{{ formatDate(event.occurredAt) }}<small>{{ formatTime(event.occurredAt) }}</small></time><div><strong>{{ event.type.replaceAll('.', ' ') }}</strong><p>{{ event.detail }}</p></div><osx-badge size="small">{{ event.entityType }}</osx-badge></li>
-          <osx-empty-state v-if="!state.products.length || !state.recentEvents.length" icon="book" title="The journal is empty">Product onboarding, decisions, executions, and measured outcomes will appear here in chronological order.</osx-empty-state>
+          <li v-for="event in state.products.length ? scopedEvents : []" :key="event.id"><span class="timeline-dot"></span><time>{{ formatDate(event.occurredAt) }}<small>{{ formatTime(event.occurredAt) }}</small></time><div><strong>{{ event.type.replaceAll('.', ' ') }}</strong><p>{{ event.detail }}</p></div><osx-badge size="small">{{ event.entityType }}</osx-badge></li>
+          <osx-empty-state v-if="!state.products.length || !scopedEvents.length" icon="book" title="The journal is empty">Project onboarding, decisions, executions, and measured outcomes will appear here in chronological order.</osx-empty-state>
         </ol>
       </main>
 
       <main v-else-if="state && view === 'harness'" class="workspace-page harness-page">
         <header class="page-header-with-action">
-          <div><p class="eyebrow">AI EXECUTION CONTROL PLANE</p><h1>Choose who owns the agent loop.</h1><p>Model APIs power cited onboarding and the native Distribution-OS harness. Agent runtimes bring their own tools, authentication, session behavior, and model controls.</p></div>
+          <div><p class="eyebrow">AI EXECUTION CONTROL PLANE</p><h1>Choose who owns the agent loop.</h1><p>The selected execution profile powers cited onboarding and distribution planning. Agent runtimes bring their own authentication, session behavior, and model controls.</p></div>
           <osx-button icon="refresh" :loading="aiBusy" @click="discoverRuntimes">Discover runtimes</osx-button>
         </header>
 
@@ -1074,8 +1266,8 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 
         <section v-if="ai" class="execution-summary">
           <div class="execution-mark"><osx-icon :name="ai.execution.runtimeId === 'native' ? 'sparkle' : 'terminal'" :size="24"></osx-icon></div>
-          <div><span>ACTIVE EXECUTION PROFILE</span><strong>{{ activeRuntime?.name }}</strong><small v-if="ai.execution.runtimeId === 'native'">{{ activeModelProfile ? `${activeModelProfile.name} · ${activeModelProfile.model}` : "Add a model profile to enable AI-backed analysis." }}</small><small v-else>{{ ai.execution.runtimeModel || "The runtime's default model" }} · onboarding via {{ activeModelProfile?.name || "local extraction" }}</small></div>
-          <osx-badge :tone="activeRuntime?.available && (ai.execution.runtimeId !== 'native' || activeModelProfile?.readiness === 'ready') ? 'success' : 'warning'" dot>{{ activeRuntime?.available && (ai.execution.runtimeId !== 'native' || activeModelProfile?.readiness === 'ready') ? "Ready" : "Setup required" }}</osx-badge>
+          <div><span>ACTIVE EXECUTION PROFILE</span><strong>{{ activeRuntime?.name }}</strong><small v-if="ai.execution.runtimeId === 'native'">{{ activeModelProfile ? `${activeModelProfile.name} · ${activeModelProfile.model}` : "Add a model profile to enable AI-backed analysis." }}</small><small v-else>{{ ai.execution.runtimeModel || "The runtime's default model" }} · owns onboarding and planning</small></div>
+          <osx-badge :tone="activeExecutionReady ? 'success' : 'warning'" dot>{{ activeExecutionReady ? "Ready" : ai.execution.runtimeId === 'native' ? "Setup required" : activeRuntime?.verification === 'failed' ? "Test failed" : "Unverified" }}</osx-badge>
         </section>
 
         <section class="ownership-grid" aria-label="AI execution ownership">
@@ -1085,23 +1277,24 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
 
         <section v-if="ai" class="harness-section">
           <div class="section-heading">
-            <div><p class="eyebrow">AGENT RUNTIMES</p><h2>Use an installed coding agent as the execution engine</h2><p>Discovery verifies installation. Claude authentication is preflighted; other runtimes verify their own authentication when a run starts.</p></div>
+            <div><p class="eyebrow">AGENT RUNTIMES</p><h2>Use an installed coding agent as the execution engine</h2><p>Discovery proves installation only. Test sends one synthetic JSON file through the same disposable, read-only adapter used by onboarding and stores only readiness, duration, and a safe failure category.</p></div>
             <span>Last checked {{ formatTime(ai.generatedAt) }}</span>
           </div>
+          <osx-alert v-if="runtimeNotice" class="runtime-notice" :tone="runtimeNotice.tone" :title="runtimeNotice.title" dismissible @dismiss="runtimeNotice = null">{{ runtimeNotice.detail }}</osx-alert>
           <div class="runtime-grid">
             <article v-for="runtime in ai.runtimes" :key="runtime.id" :class="['runtime-card', { selected: ai.execution.runtimeId === runtime.id, unavailable: !runtime.available }]">
-              <header><span class="runtime-icon"><osx-icon :name="runtime.id === 'native' ? 'sparkle' : 'terminal'" :size="20"></osx-icon></span><div><h3>{{ runtime.name }}</h3><small>{{ runtime.version || (runtime.id === 'native' ? 'Built in' : runtime.command) }}</small></div><osx-badge :tone="runtime.availability === 'available' ? 'success' : runtime.availability === 'setup-required' ? 'warning' : 'neutral'" size="small" dot>{{ runtime.availability.replace('-', ' ') }}</osx-badge></header>
-              <p>{{ runtime.detail }}</p>
+              <header><span class="runtime-icon"><osx-icon :name="runtime.id === 'native' ? 'sparkle' : 'terminal'" :size="20"></osx-icon></span><div><h3>{{ runtime.name }}</h3><small>{{ runtime.version || (runtime.id === 'native' ? 'Built in' : runtime.command) }}</small></div><osx-badge :tone="runtimeStatusTone(runtime)" size="small" dot>{{ runtimeStatusLabel(runtime) }}</osx-badge></header>
+              <p>{{ runtime.verificationDetail || runtime.detail }}<small v-if="runtime.verifiedAt">Tested {{ formatDate(runtime.verifiedAt) }} at {{ formatTime(runtime.verifiedAt) }}<template v-if="runtime.verificationDurationMs"> · {{ runtime.verificationDurationMs }}ms</template></small></p>
               <ul><li v-for="capability in runtime.capabilities" :key="capability"><osx-icon name="check" :size="13"></osx-icon>{{ capability }}</li></ul>
               <label v-if="runtime.id !== 'native' && runtime.ownsModelSelection && ai.execution.runtimeId === runtime.id">Runtime model override <input v-model="runtimeModel" placeholder="Optional — use runtime default" /></label>
-              <footer><span>{{ runtime.ownsModelSelection ? "Runtime owns model selection" : "Uses the active model profile" }}</span><osx-button size="small" :variant="ai.execution.runtimeId === runtime.id ? 'secondary' : 'primary'" :disabled="!runtime.available || aiBusy || ai.execution.runtimeId === runtime.id" @click="chooseRuntime(runtime.id)">{{ ai.execution.runtimeId === runtime.id ? "Active" : "Use runtime" }}</osx-button></footer>
+              <footer><span>{{ runtime.ownsModelSelection ? "Runtime owns model selection" : "Uses the active model profile" }}</span><span class="runtime-actions"><osx-button v-if="runtime.id !== 'native'" size="small" icon="activity" :loading="testingRuntimeId === runtime.id" :disabled="!runtime.available || Boolean(testingRuntimeId) || aiBusy" @click="verifyAgentRuntime(runtime)">Test</osx-button><osx-button size="small" :variant="ai.execution.runtimeId === runtime.id ? 'secondary' : 'primary'" :disabled="!runtime.available || aiBusy || ai.execution.runtimeId === runtime.id" @click="chooseRuntime(runtime.id)">{{ ai.execution.runtimeId === runtime.id ? "Active" : "Use runtime" }}</osx-button></span></footer>
             </article>
           </div>
         </section>
 
         <section v-if="ai" class="harness-section">
           <div class="section-heading">
-            <div><p class="eyebrow">MODEL APIS</p><h2>Inference for onboarding and the native harness</h2><p>The selected profile powers source-cited onboarding even when an external runtime owns longer agent work. Secrets are read from provider environment variables or {{ ai.secureStorage }} and never enter the ledger.</p></div>
+            <div><p class="eyebrow">MODEL APIS</p><h2>Inference for the Native runtime</h2><p>The selected profile powers source-cited onboarding and planning when Native is active. Secrets are read from provider environment variables or {{ ai.secureStorage }} and never enter the ledger.</p></div>
             <osx-badge>{{ ai.profiles.length }} profile{{ ai.profiles.length === 1 ? "" : "s" }}</osx-badge>
           </div>
 
@@ -1120,7 +1313,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
                 <label v-if="profileForm.provider !== 'ollama'" class="wide">API key <input v-model="profileForm.apiKey" type="password" autocomplete="off" :placeholder="selectedProvider?.environmentVariables.length ? `Optional if ${selectedProvider.environmentVariables.join(' or ')} is set` : 'Stored securely'" /><small>Leave blank to use an environment variable. A supplied key is saved only to {{ ai.secureStorage }}.</small></label>
               </div>
               <osx-alert v-if="profileNotice" class="profile-notice" :tone="profileNotice.tone" :title="profileNotice.title">{{ profileNotice.detail }}</osx-alert>
-              <footer><span>Saving selects this API for onboarding and native inference. It does not change the selected agent runtime.</span><osx-button type="button" variant="primary" icon="plus" :loading="aiBusy" @click="saveProfile">Save profile</osx-button></footer>
+              <footer><span>Saving makes this API available to Native. It does not change the selected agent runtime.</span><osx-button type="button" variant="primary" icon="plus" :loading="aiBusy" @click="saveProfile">Save profile</osx-button></footer>
             </form>
           </div>
 
@@ -1135,10 +1328,10 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <osx-empty-state v-else icon="sparkle" title="No model profiles configured">The deterministic local analyzer still works. Add a provider when you want model-backed research, synthesis, and agent execution.</osx-empty-state>
         </section>
 
-        <section v-if="state.harnessRuns?.length" class="harness-section">
-          <div class="section-heading"><div><p class="eyebrow">RUN LEDGER</p><h2>Every plan leaves evidence</h2><p>Model calls, tool chaining, fallbacks, and failures remain inspectable without storing prompts or credentials.</p></div><osx-badge>{{ state.harnessRuns.length }} recent</osx-badge></div>
+        <section v-if="scopedHarnessRuns.length" class="harness-section">
+          <div class="section-heading"><div><p class="eyebrow">RUN LEDGER</p><h2>Every plan leaves evidence</h2><p>Model calls, tool chaining, fallbacks, and failures remain inspectable without storing prompts or credentials.</p></div><osx-badge>{{ scopedHarnessRuns.length }} recent</osx-badge></div>
           <div class="run-ledger">
-            <article v-for="run in state.harnessRuns" :key="run.id">
+            <article v-for="run in scopedHarnessRuns" :key="run.id">
               <header><div><strong>{{ run.kind.replaceAll('-', ' ') }}</strong><small>{{ run.provider ? `${run.provider} · ${run.model}` : run.runtimeId }}</small></div><osx-badge :tone="run.status === 'completed' ? 'success' : run.status === 'failed' ? 'danger' : 'warning'" dot>{{ run.status }}</osx-badge></header>
               <p>{{ run.summary || run.error || 'Run in progress' }}</p>
               <ol><li v-for="step in run.steps" :key="step.id"><span :class="['run-step-dot', step.status]"></span><div><strong>{{ step.name }}</strong><small>{{ step.detail }}</small></div></li></ol>
@@ -1201,7 +1394,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
         </osx-empty-state>
       </aside>
 
-      <osx-status-bar slot="status" :label="state?.onboarding.required ? 'Product onboarding required' : state ? 'Local ledger ready' : 'Starting local ledger'" :status="error ? 'offline' : loading ? 'working' : 'ready'" :detail="state ? `Updated ${formatTime(state.generatedAt)}` : ''">
+      <osx-status-bar slot="status" :label="state?.onboarding.required ? 'Project onboarding required' : state ? `${activeProduct?.name || 'All Projects'} · local ledger ready` : 'Starting local ledger'" :status="error ? 'offline' : loading ? 'working' : 'ready'" :detail="state ? `Updated ${formatTime(state.generatedAt)}` : ''">
         <span v-if="state">· Human approval required for public actions</span>
       </osx-status-bar>
     </osx-app-shell>

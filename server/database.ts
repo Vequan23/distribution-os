@@ -129,6 +129,7 @@ export class DistributionDatabase {
         audience TEXT NOT NULL DEFAULT '',
         objective TEXT NOT NULL DEFAULT '',
         positioning TEXT NOT NULL DEFAULT '',
+        voice_guidance TEXT NOT NULL DEFAULT '',
         confidence INTEGER NOT NULL DEFAULT 0,
         onboarding_status TEXT NOT NULL DEFAULT 'draft',
         is_demo INTEGER NOT NULL DEFAULT 0,
@@ -189,6 +190,30 @@ export class DistributionDatabase {
         metric TEXT NOT NULL,
         value REAL NOT NULL,
         captured_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        source TEXT NOT NULL DEFAULT 'manual'
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_connections (
+        channel_id TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
+        product_id TEXT NOT NULL DEFAULT '',
+        signal_query TEXT NOT NULL DEFAULT '',
+        publish_tags_json TEXT NOT NULL DEFAULT '[]',
+        credential_source TEXT NOT NULL DEFAULT 'none',
+        last_signal_sync_at TEXT NOT NULL DEFAULT '',
+        last_outcome_sync_at TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS channel_executions (
+        id TEXT PRIMARY KEY,
+        opportunity_id TEXT NOT NULL UNIQUE REFERENCES opportunities(id) ON DELETE CASCADE,
+        channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        external_id TEXT NOT NULL DEFAULT '',
+        external_url TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('pending', 'published', 'failed')),
+        executed_at TEXT NOT NULL,
+        last_synced_at TEXT NOT NULL DEFAULT '',
         payload_json TEXT NOT NULL DEFAULT '{}'
       );
 
@@ -279,7 +304,8 @@ export class DistributionDatabase {
         last_run_at TEXT NOT NULL DEFAULT '',
         next_run_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        archived_at TEXT NOT NULL DEFAULT ''
       );
 
       CREATE TABLE IF NOT EXISTS automation_runs (
@@ -368,6 +394,8 @@ export class DistributionDatabase {
         ON action_adapters(transport, updated_at DESC);
       CREATE INDEX IF NOT EXISTS action_executions_recent_idx
         ON action_executions(created_at DESC);
+      CREATE INDEX IF NOT EXISTS channel_executions_recent_idx
+        ON channel_executions(channel_id, executed_at DESC);
     `);
 
     this.database.prepare("INSERT OR IGNORE INTO automation_control (id, paused, updated_at) VALUES ('global', 0, ?)").run(now());
@@ -378,11 +406,14 @@ export class DistributionDatabase {
     this.addColumn("products", "confidence", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("products", "onboarding_status", "TEXT NOT NULL DEFAULT 'draft'");
     this.addColumn("products", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("products", "voice_guidance", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("evidence", "source_type", "TEXT NOT NULL DEFAULT 'text'");
     this.addColumn("evidence", "classification", "TEXT NOT NULL DEFAULT 'intent'");
     this.addColumn("evidence", "confidence", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("signal_candidates", "origin", "TEXT NOT NULL DEFAULT 'manual'");
     this.addColumn("signal_candidates", "external_id", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("outcomes", "source", "TEXT NOT NULL DEFAULT 'manual'");
+    this.addColumn("automation_playbooks", "archived_at", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("action_adapters", "credential_env", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("action_adapters", "last_checked_at", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("action_adapters", "last_error", "TEXT NOT NULL DEFAULT ''");
@@ -400,16 +431,48 @@ export class DistributionDatabase {
 
   private seedChannels(): void {
     const count = this.database.prepare("SELECT COUNT(*) AS count FROM channels").get() as Row;
-    if (Number(count.count) > 0) return;
     const createdAt = now();
-    const insertChannel = this.database.prepare(`
-      INSERT INTO channels (id, name, handle, mode, status, daily_limit, connected, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    insertChannel.run("linkedin", "LinkedIn", "Personal profile", "approval", "manual", 1, 0, createdAt);
-    insertChannel.run("bluesky", "Bluesky", "Not connected", "approval", "planned", 2, 0, createdAt);
-    insertChannel.run("x", "X", "Not connected", "approval", "planned", 2, 0, createdAt);
-    insertChannel.run("devto", "Dev.to", "Draft export", "draft", "manual", 1, 0, createdAt);
+    if (Number(count.count) === 0) {
+      const insertChannel = this.database.prepare(`
+        INSERT INTO channels (id, name, handle, mode, status, daily_limit, connected, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertChannel.run("linkedin", "LinkedIn", "Personal profile", "approval", "manual", 1, 0, createdAt);
+      insertChannel.run("bluesky", "Bluesky", "Not connected", "approval", "planned", 2, 0, createdAt);
+      insertChannel.run("x", "X", "Not connected", "approval", "planned", 2, 0, createdAt);
+      insertChannel.run("devto", "Dev.to", "DEV connector", "approval", "manual", 1, 0, createdAt);
+    }
+    this.database.prepare("INSERT OR IGNORE INTO channel_connections (channel_id, updated_at) VALUES ('devto', ?)").run(createdAt);
+    this.database.prepare("UPDATE channels SET handle = 'DEV connector', mode = 'approval' WHERE id = 'devto'").run();
+  }
+
+  private mapChannel(row: Row): Channel {
+    const connection = row.id === "devto"
+      ? this.database.prepare("SELECT * FROM channel_connections WHERE channel_id = 'devto'").get() as Row | undefined
+      : undefined;
+    const credentialSource = process.env.DEVTO_API_KEY?.trim()
+      ? "environment"
+      : String(connection?.credential_source || "none") as "environment" | "keychain" | "none";
+    return {
+      id: String(row.id), name: String(row.name), handle: String(row.handle), mode: String(row.mode) as Channel["mode"],
+      status: String(row.status) as Channel["status"], dailyLimit: Number(row.daily_limit), connected: Boolean(row.connected),
+      connector: {
+        kind: row.id === "devto" ? "devto" : "none",
+        configured: row.id === "devto" && Boolean(connection?.signal_query),
+        authenticated: row.id === "devto" && credentialSource !== "none",
+        credentialSource: row.id === "devto" ? credentialSource : "none",
+        productId: row.id === "devto" ? String(connection?.product_id || "") : "",
+        signalQuery: row.id === "devto" ? String(connection?.signal_query || "") : "",
+        publishTags: row.id === "devto" ? JSON.parse(String(connection?.publish_tags_json || "[]")) as string[] : [],
+        lastSignalSyncAt: row.id === "devto" ? String(connection?.last_signal_sync_at || "") : "",
+        lastOutcomeSyncAt: row.id === "devto" ? String(connection?.last_outcome_sync_at || "") : "",
+        detail: row.id === "devto"
+          ? credentialSource !== "none"
+            ? "A verified credential is available for founder-approved publishing."
+            : "Public signal discovery needs no key. Publishing and authenticated outcome capture require one."
+          : "No real connector is implemented for this channel.",
+      },
+    };
   }
 
   private markLegacyDemoData(): void {
@@ -489,6 +552,7 @@ export class DistributionDatabase {
     const audience = input.audience.trim();
     const objective = input.objective.trim();
     const positioning = input.positioning.trim();
+    const voiceGuidance = input.voiceGuidance?.trim().slice(0, 1_000) || "Direct, specific, useful, and candid about uncertainty. Avoid hype and unsupported certainty.";
     if (!name || !description || !audience || !objective) {
       throw new Error("Name, description, audience, and objective are required.");
     }
@@ -510,19 +574,19 @@ export class DistributionDatabase {
       if (existing) {
         this.database.prepare(`
           UPDATE products SET name = ?, description = ?, stage = ?, repository_url = ?, website_url = ?,
-            audience = ?, objective = ?, positioning = ?, confidence = ?, onboarding_status = 'ready'
+            audience = ?, objective = ?, positioning = ?, voice_guidance = ?, confidence = ?, onboarding_status = 'ready'
           WHERE id = ?
         `).run(
           name, description, input.stage,
           input.repositoryUrl?.trim() || String(existing.repository_url || ""),
           input.websiteUrl?.trim() || String(existing.website_url || ""),
-          audience, objective, positioning, Math.max(confidence, Number(existing.confidence || 0)), productId,
+          audience, objective, positioning, voiceGuidance, Math.max(confidence, Number(existing.confidence || 0)), productId,
         );
       } else this.database.prepare(`
         INSERT INTO products (
           id, name, description, stage, repository_url, website_url, audience, objective,
-          positioning, confidence, onboarding_status, is_demo, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?)
+          positioning, voice_guidance, confidence, onboarding_status, is_demo, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 0, ?)
       `).run(
         productId,
         name,
@@ -533,6 +597,7 @@ export class DistributionDatabase {
         audience,
         objective,
         positioning,
+        voiceGuidance,
         confidence,
         createdAt,
       );
@@ -627,7 +692,7 @@ export class DistributionDatabase {
     const product: Product = {
       id: String(row.id), name: String(row.name), description: String(row.description), stage: String(row.stage) as Product["stage"],
       repositoryUrl: String(row.repository_url), websiteUrl: String(row.website_url), evidenceCount: Number(row.evidence_count),
-      audience: String(row.audience), objective: String(row.objective), positioning: String(row.positioning),
+      audience: String(row.audience), objective: String(row.objective), positioning: String(row.positioning), voiceGuidance: String(row.voice_guidance),
       confidence: Number(row.confidence), onboardingStatus: String(row.onboarding_status) as Product["onboardingStatus"],
     };
     const evidence = (this.database.prepare(`
@@ -638,11 +703,58 @@ export class DistributionDatabase {
       sourceUrl: String(item.source_url), occurredAt: String(item.occurred_at), sourceType: String(item.source_type) as Evidence["sourceType"],
       classification: String(item.classification) as Evidence["classification"], confidence: Number(item.confidence),
     }));
-    const channels = (this.database.prepare("SELECT * FROM channels ORDER BY connected DESC, name").all() as Row[]).map((item): Channel => ({
-      id: String(item.id), name: String(item.name), handle: String(item.handle), mode: String(item.mode) as Channel["mode"],
-      status: String(item.status) as Channel["status"], dailyLimit: Number(item.daily_limit), connected: Boolean(item.connected),
-    }));
+    const channels = (this.database.prepare("SELECT * FROM channels ORDER BY connected DESC, name").all() as Row[]).map((item) => this.mapChannel(item));
     return { product, evidence, channels };
+  }
+
+  deleteProduct(productId: string): void {
+    const product = this.database.prepare("SELECT id, name FROM products WHERE id = ? AND is_demo = 0").get(productId) as Row | undefined;
+    if (!product) throw new Error("Product not found");
+    const activeRun = this.database.prepare("SELECT id FROM automation_runs WHERE product_id = ? AND status IN ('queued', 'running') LIMIT 1").get(productId) as Row | undefined;
+    if (activeRun) throw new Error("Wait for the active evidence loop run to finish before permanently deleting this project.");
+
+    const collectIds = (sql: string, value: string): string[] => (this.database.prepare(sql).all(value) as Row[]).map((row) => String(row.id));
+    const evidenceIds = collectIds("SELECT id FROM evidence WHERE product_id = ?", productId);
+    const opportunityIds = collectIds("SELECT id FROM opportunities WHERE product_id = ?", productId);
+    const signalIds = collectIds("SELECT id FROM signal_candidates WHERE product_id = ?", productId);
+    const connectorIds = collectIds("SELECT id FROM source_connectors WHERE product_id = ?", productId);
+    const playbookIds = collectIds("SELECT id FROM automation_playbooks WHERE product_id = ?", productId);
+    const automationRunIds = collectIds("SELECT id FROM automation_runs WHERE product_id = ?", productId);
+    const harnessRunIds = collectIds("SELECT id FROM harness_runs WHERE product_id = ?", productId);
+    const executionIds = opportunityIds.flatMap((id) => collectIds("SELECT id FROM channel_executions WHERE opportunity_id = ?", id));
+    const projectRefs = new Set([productId, ...evidenceIds, ...opportunityIds, ...signalIds, ...connectorIds, ...playbookIds, ...automationRunIds, ...harnessRunIds, ...executionIds]);
+    const actionExecutionIds = (this.database.prepare("SELECT id, status, evidence_refs_json, arguments_json FROM action_executions").all() as Row[]).flatMap((row) => {
+      let evidenceRefs: string[] = [];
+      let argumentsPayload: Record<string, unknown> = {};
+      try { evidenceRefs = JSON.parse(String(row.evidence_refs_json)) as string[]; } catch { evidenceRefs = []; }
+      try { argumentsPayload = JSON.parse(String(row.arguments_json)) as Record<string, unknown>; } catch { argumentsPayload = {}; }
+      const linked = evidenceRefs.some((ref) => projectRefs.has(String(ref))) || String(argumentsPayload.productId || "") === productId;
+      if (linked && String(row.status) === "running") throw new Error("Wait for the active project action to finish before permanently deleting this project.");
+      return linked ? [String(row.id)] : [];
+    });
+
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const deleteEvents = this.database.prepare("DELETE FROM events WHERE entity_type = ? AND entity_id = ?");
+      const eventEntities: Array<[string, string[]]> = [
+        ["product", [productId]], ["opportunity", opportunityIds], ["execution", executionIds], ["signal", signalIds],
+        ["connector", connectorIds], ["automation-playbook", playbookIds], ["automation-run", automationRunIds], ["action-execution", actionExecutionIds],
+      ];
+      for (const [entityType, ids] of eventEntities) for (const id of ids) deleteEvents.run(entityType, id);
+      this.database.prepare("DELETE FROM events WHERE instr(payload_json, ?) > 0").run(JSON.stringify(productId));
+      for (const id of actionExecutionIds) this.database.prepare("DELETE FROM action_executions WHERE id = ?").run(id);
+      this.database.prepare("DELETE FROM harness_runs WHERE product_id = ?").run(productId);
+      const devConnection = this.database.prepare("SELECT product_id FROM channel_connections WHERE channel_id = 'devto'").get() as Row | undefined;
+      if (String(devConnection?.product_id || "") === productId) {
+        this.database.prepare("UPDATE channel_connections SET product_id = '', signal_query = '', publish_tags_json = '[]', last_signal_sync_at = '', last_outcome_sync_at = '', updated_at = ? WHERE channel_id = 'devto'").run(now());
+        this.database.prepare("UPDATE channels SET connected = 0, status = 'manual', handle = 'DEV connector' WHERE id = 'devto'").run();
+      }
+      this.database.prepare("DELETE FROM products WHERE id = ?").run(productId);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   addAudienceSignals(productId: string, sources: IngestedSource[]): number {
@@ -706,6 +818,8 @@ export class DistributionDatabase {
         const origin = metadata.origin ?? "manual";
         const reason = origin === "github"
           ? "Imported read-only from a GitHub issue. Inspect the source before promoting this observation into audience evidence."
+          : origin === "devto"
+          ? "Imported read-only from a public DEV article. Inspect the source before promoting this observation into audience evidence."
           : source.type === "url"
           ? "Captured from a public URL. Review the excerpt before promoting it into audience evidence."
           : "Founder-supplied observation. Accept only if the context is specific enough to influence a distribution decision.";
@@ -724,6 +838,117 @@ export class DistributionDatabase {
       );
       this.database.exec("COMMIT");
       return { insertedCount: signalIds.length, signalIds };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  getDevToConnection(): { productId: string; signalQuery: string; publishTags: string[]; lastSignalSyncAt: string; lastOutcomeSyncAt: string } {
+    const row = this.database.prepare("SELECT * FROM channel_connections WHERE channel_id = 'devto'").get() as Row | undefined;
+    return {
+      productId: String(row?.product_id || ""),
+      signalQuery: String(row?.signal_query || ""),
+      publishTags: JSON.parse(String(row?.publish_tags_json || "[]")) as string[],
+      lastSignalSyncAt: String(row?.last_signal_sync_at || ""),
+      lastOutcomeSyncAt: String(row?.last_outcome_sync_at || ""),
+    };
+  }
+
+  configureDevToConnection(productId: string, signalQuery: string, publishTags: string[]): void {
+    const product = this.getProductContext(productId).product;
+    const query = signalQuery.trim().replace(/\s+/g, " ").slice(0, 120);
+    if (!query) throw new Error("Add a focused DEV search query before connecting signals.");
+    const tags = [...new Set(publishTags.map((tag) => tag.trim().toLowerCase().replace(/[^a-z0-9]/g, "")).filter(Boolean))].slice(0, 4);
+    this.database.prepare(`
+      UPDATE channel_connections SET product_id = ?, signal_query = ?, publish_tags_json = ?, updated_at = ? WHERE channel_id = 'devto'
+    `).run(productId, query, JSON.stringify(tags), now());
+    this.database.prepare("UPDATE channels SET connected = 1, status = 'connected', mode = 'approval', handle = 'DEV API' WHERE id = 'devto'").run();
+    this.recordEvent("channel.devto.configured", "product", productId, `DEV signal search connected for ${product.name}. Publishing still requires approval and a verified API key.`, { signalQuery: query, publishTags: tags });
+  }
+
+  setDevToCredentialSource(source: "keychain" | "none"): void {
+    this.database.prepare("UPDATE channel_connections SET credential_source = ?, updated_at = ? WHERE channel_id = 'devto'").run(source, now());
+    this.recordEvent("channel.devto.credential", "channel", "devto", source === "keychain" ? "DEV credential verified and stored in macOS Keychain." : "Stored DEV credential removed.", { source });
+  }
+
+  importDevToSignals(productId: string, articles: Array<{ id: number; title: string; description: string; url: string; publishedAt: string; reactions: number; comments: number }>): number {
+    const sources: IngestedSource[] = articles.slice(0, 8).map((article) => ({
+      type: "url",
+      label: article.title.slice(0, 160),
+      sourceUrl: article.url,
+      summary: article.description.slice(0, 480),
+      excerpt: `${article.description.slice(0, 900)} Public engagement at capture: ${article.reactions} reactions and ${article.comments} comments.`,
+      classification: "audience-signal",
+      confidence: Math.min(82, 62 + Math.min(12, article.comments * 2) + Math.min(8, article.reactions)),
+    }));
+    const result = this.addSignalCandidates(productId, sources, { origin: "devto", externalIds: articles.slice(0, 8).map((article) => String(article.id)) });
+    const syncedAt = now();
+    this.database.prepare("UPDATE channel_connections SET last_signal_sync_at = ?, updated_at = ? WHERE channel_id = 'devto'").run(syncedAt, syncedAt);
+    if (result.insertedCount) this.recordEvent("signal.devto.synced", "product", productId, `${result.insertedCount} new public DEV observation${result.insertedCount === 1 ? "" : "s"} entered the Signal Inbox.`, { inserted: result.insertedCount });
+    return result.insertedCount;
+  }
+
+  beginDevToExecution(opportunityId: string): { executionId: string; title: string; bodyMarkdown: string; publishTags: string[] } {
+    const row = this.database.prepare(`
+      SELECT o.id, o.title, o.draft_copy, o.status, o.channel_id, c.daily_limit
+      FROM opportunities o JOIN channels c ON c.id = o.channel_id WHERE o.id = ?
+    `).get(opportunityId) as Row | undefined;
+    if (!row) throw new Error("Opportunity not found");
+    if (row.channel_id !== "devto") throw new Error("Only an approved DEV contribution can use this connector.");
+    if (row.status !== "approved") throw new Error("Approve the current draft before publishing it.");
+    const existing = this.database.prepare("SELECT id, status FROM channel_executions WHERE opportunity_id = ?").get(opportunityId) as Row | undefined;
+    if (existing?.status === "published" || existing?.status === "pending") throw new Error("This contribution already has an execution receipt.");
+    const today = this.database.prepare("SELECT COUNT(*) AS count FROM channel_executions WHERE channel_id = 'devto' AND status = 'published' AND date(executed_at) = date('now')").get() as Row;
+    if (Number(today.count) >= Number(row.daily_limit)) throw new Error("The DEV daily limit has been reached.");
+    const executionId = existing ? String(existing.id) : randomUUID();
+    if (existing) this.database.prepare("UPDATE channel_executions SET status = 'pending', external_id = '', external_url = '', executed_at = ?, payload_json = '{}' WHERE id = ?").run(now(), executionId);
+    else this.database.prepare("INSERT INTO channel_executions (id, opportunity_id, channel_id, status, executed_at) VALUES (?, ?, 'devto', 'pending', ?)").run(executionId, opportunityId, now());
+    return { executionId, title: String(row.title), bodyMarkdown: String(row.draft_copy), publishTags: this.getDevToConnection().publishTags };
+  }
+
+  finishDevToExecution(executionId: string, externalId: string, externalUrl: string, payload: Record<string, unknown>): void {
+    const execution = this.database.prepare("SELECT opportunity_id FROM channel_executions WHERE id = ? AND status = 'pending'").get(executionId) as Row | undefined;
+    if (!execution) throw new Error("Pending execution receipt not found");
+    const executedAt = now();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare("UPDATE channel_executions SET external_id = ?, external_url = ?, status = 'published', executed_at = ?, last_synced_at = ?, payload_json = ? WHERE id = ?")
+        .run(externalId, externalUrl, executedAt, executedAt, JSON.stringify(payload), executionId);
+      this.database.prepare("UPDATE opportunities SET status = 'published', scheduled_for = NULL WHERE id = ?").run(execution.opportunity_id);
+      this.recordEvent("opportunity.executed", "opportunity", String(execution.opportunity_id), `Founder-approved contribution published to DEV: ${externalUrl}`, { executionId, externalId, externalUrl });
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  failDevToExecution(executionId: string, message: string): void {
+    this.database.prepare("UPDATE channel_executions SET status = 'failed', payload_json = ? WHERE id = ? AND status = 'pending'").run(JSON.stringify({ error: message.slice(0, 500) }), executionId);
+    this.recordEvent("opportunity.execution.failed", "execution", executionId, `DEV execution failed: ${message.slice(0, 300)}`);
+  }
+
+  getPublishedDevToExecutions(): Array<{ id: string; opportunityId: string; externalId: string }> {
+    return (this.database.prepare("SELECT id, opportunity_id, external_id FROM channel_executions WHERE channel_id = 'devto' AND status = 'published'").all() as Row[]).map((row) => ({
+      id: String(row.id), opportunityId: String(row.opportunity_id), externalId: String(row.external_id),
+    }));
+  }
+
+  recordConnectorOutcomes(executionId: string, opportunityId: string, metrics: Array<{ metric: string; value: number }>): void {
+    const capturedAt = now();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const metric of metrics) {
+        const prior = this.database.prepare("SELECT value FROM outcomes WHERE opportunity_id = ? AND metric = ? AND source = 'connector' ORDER BY captured_at DESC, rowid DESC LIMIT 1").get(opportunityId, metric.metric) as Row | undefined;
+        if (prior && Number(prior.value) === metric.value) continue;
+        this.database.prepare("INSERT INTO outcomes (id, opportunity_id, metric, value, captured_at, payload_json, source) VALUES (?, ?, ?, ?, ?, '{}', 'connector')")
+          .run(randomUUID(), opportunityId, metric.metric, metric.value, capturedAt);
+      }
+      this.database.prepare("UPDATE channel_executions SET last_synced_at = ? WHERE id = ?").run(capturedAt, executionId);
+      this.database.prepare("UPDATE channel_connections SET last_outcome_sync_at = ?, updated_at = ? WHERE channel_id = 'devto'").run(capturedAt, capturedAt);
+      this.recordEvent("outcome.devto.synced", "opportunity", opportunityId, `DEV outcomes synchronized: ${metrics.map((metric) => `${metric.metric} ${metric.value}`).join(", ")}.`, { executionId, metrics });
+      this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
@@ -922,7 +1147,7 @@ export class DistributionDatabase {
   }
 
   updateAutomationPlaybook(id: string, input: { enabled: boolean; intervalMinutes: number; maxActionsPerRun: number }): AutomationPlaybook {
-    const row = this.database.prepare("SELECT id, name FROM automation_playbooks WHERE id = ?").get(id) as Row | undefined;
+    const row = this.database.prepare("SELECT id, name FROM automation_playbooks WHERE id = ? AND archived_at = ''").get(id) as Row | undefined;
     if (!row) throw new Error("Automation playbook not found");
     this.validateAutomationLimits(input.intervalMinutes, input.maxActionsPerRun);
     const updatedAt = now();
@@ -937,6 +1162,16 @@ export class DistributionDatabase {
     return this.getAutomationPlaybook(id);
   }
 
+  archiveAutomationPlaybook(id: string): void {
+    const row = this.database.prepare("SELECT id, product_id, name FROM automation_playbooks WHERE id = ? AND archived_at = ''").get(id) as Row | undefined;
+    if (!row) throw new Error("Automation playbook not found");
+    const active = this.database.prepare("SELECT id FROM automation_runs WHERE playbook_id = ? AND status IN ('queued', 'running') LIMIT 1").get(id) as Row | undefined;
+    if (active) throw new Error("Wait for the active evidence loop run to finish before deleting it.");
+    const archivedAt = now();
+    this.database.prepare("UPDATE automation_playbooks SET enabled = 0, archived_at = ?, updated_at = ? WHERE id = ?").run(archivedAt, archivedAt, id);
+    this.recordEvent("automation.playbook.archived", "automation-playbook", id, `${String(row.name)} removed from active evidence loops. Historical runs and outcomes were preserved.`, { productId: row.product_id });
+  }
+
   setAutomationPaused(paused: boolean): AutomationState {
     this.database.prepare("UPDATE automation_control SET paused = ?, updated_at = ? WHERE id = 'global'").run(paused ? 1 : 0, now());
     this.recordEvent(paused ? "automation.paused" : "automation.resumed", "automation-control", "global", paused ? "All automated sensing and preparation paused." : "Automated sensing and preparation resumed. Public actions still require approval.");
@@ -946,7 +1181,7 @@ export class DistributionDatabase {
   getAutomationPlaybook(id: string): AutomationPlaybook {
     const row = this.database.prepare(`
       SELECT a.*, p.name AS product_name FROM automation_playbooks a
-      JOIN products p ON p.id = a.product_id WHERE a.id = ? AND p.is_demo = 0
+      JOIN products p ON p.id = a.product_id WHERE a.id = ? AND a.archived_at = '' AND p.is_demo = 0
     `).get(id) as Row | undefined;
     if (!row) throw new Error("Automation playbook not found");
     return this.mapAutomationPlaybook(row);
@@ -958,7 +1193,7 @@ export class DistributionDatabase {
     return (this.database.prepare(`
       SELECT a.*, p.name AS product_name FROM automation_playbooks a
       JOIN products p ON p.id = a.product_id
-      WHERE a.enabled = 1 AND p.is_demo = 0 AND a.next_run_at <= ?
+      WHERE a.enabled = 1 AND a.archived_at = '' AND p.is_demo = 0 AND a.next_run_at <= ?
       ORDER BY a.next_run_at LIMIT 10
     `).all(referenceTime) as Row[]).map((row) => this.mapAutomationPlaybook(row));
   }
@@ -1034,7 +1269,7 @@ export class DistributionDatabase {
     const controlRow = this.database.prepare("SELECT * FROM automation_control WHERE id = 'global'").get() as Row;
     const playbooks = (this.database.prepare(`
       SELECT a.*, p.name AS product_name FROM automation_playbooks a JOIN products p ON p.id = a.product_id
-      WHERE p.is_demo = 0 ORDER BY a.enabled DESC, a.updated_at DESC
+      WHERE p.is_demo = 0 AND a.archived_at = '' ORDER BY a.enabled DESC, a.updated_at DESC
     `).all() as Row[]).map((row) => this.mapAutomationPlaybook(row));
     const runs = (this.database.prepare(`
       SELECT r.id FROM automation_runs r JOIN products p ON p.id = r.product_id
@@ -1395,20 +1630,13 @@ export class DistributionDatabase {
       audience: String(row.audience),
       objective: String(row.objective),
       positioning: String(row.positioning),
+      voiceGuidance: String(row.voice_guidance),
       confidence: Number(row.confidence),
       onboardingStatus: String(row.onboarding_status) as Product["onboardingStatus"],
     }));
 
     const channelRows = this.database.prepare("SELECT * FROM channels ORDER BY connected DESC, name").all() as Row[];
-    const channels: Channel[] = channelRows.map((row) => ({
-      id: String(row.id),
-      name: String(row.name),
-      handle: String(row.handle),
-      mode: String(row.mode) as Channel["mode"],
-      status: String(row.status) as Channel["status"],
-      dailyLimit: Number(row.daily_limit),
-      connected: Boolean(row.connected),
-    }));
+    const channels: Channel[] = channelRows.map((row) => this.mapChannel(row));
 
     const opportunityRows = this.database.prepare(`
       SELECT o.*, p.name AS product_name, c.name AS channel_name, c.mode AS channel_mode
@@ -1422,6 +1650,14 @@ export class DistributionDatabase {
 
     const evidenceStatement = this.database.prepare(`
       SELECT id, kind, title, summary, source_url, occurred_at, source_type, classification, confidence FROM evidence WHERE id = ?
+    `);
+    const executionStatement = this.database.prepare("SELECT * FROM channel_executions WHERE opportunity_id = ? LIMIT 1");
+    const outcomeStatement = this.database.prepare(`
+      SELECT metric, value, source, captured_at FROM (
+        SELECT metric, value, source, captured_at,
+               ROW_NUMBER() OVER (PARTITION BY metric ORDER BY captured_at DESC, rowid DESC) AS rank
+        FROM outcomes WHERE opportunity_id = ?
+      ) WHERE rank = 1 ORDER BY metric
     `);
     const opportunities: Opportunity[] = opportunityRows.map((row) => {
       const evidenceIds = JSON.parse(String(row.evidence_ids_json)) as string[];
@@ -1440,6 +1676,10 @@ export class DistributionDatabase {
           confidence: Number(evidenceRow.confidence),
         }];
       });
+      const executionRow = executionStatement.get(row.id) as Row | undefined;
+      const outcomes = (outcomeStatement.all(row.id) as Row[]).map((item) => ({
+        metric: String(item.metric), value: Number(item.value), source: String(item.source) as "manual" | "connector", capturedAt: String(item.captured_at),
+      }));
       return {
         id: String(row.id),
         productId: String(row.product_id),
@@ -1463,6 +1703,12 @@ export class DistributionDatabase {
         status: String(row.status) as OpportunityStatus,
         discoveredAt: String(row.discovered_at),
         evidence,
+        execution: executionRow ? {
+          id: String(executionRow.id), opportunityId: String(executionRow.opportunity_id), channelId: String(executionRow.channel_id),
+          externalId: String(executionRow.external_id), externalUrl: String(executionRow.external_url),
+          status: String(executionRow.status) as "pending" | "published" | "failed", executedAt: String(executionRow.executed_at), lastSyncedAt: String(executionRow.last_synced_at),
+        } : null,
+        outcomes,
       };
     });
 
@@ -1478,7 +1724,18 @@ export class DistributionDatabase {
     `).get() as Row;
 
     const eventRows = this.database.prepare(`
-      SELECT * FROM events
+      SELECT events.*,
+        CASE
+          WHEN events.entity_type = 'product' THEN events.entity_id
+          WHEN events.entity_type = 'opportunity' THEN (SELECT product_id FROM opportunities WHERE id = events.entity_id)
+          WHEN events.entity_type = 'execution' THEN (SELECT o.product_id FROM channel_executions x JOIN opportunities o ON o.id = x.opportunity_id WHERE x.id = events.entity_id)
+          WHEN events.entity_type = 'signal' THEN (SELECT product_id FROM signal_candidates WHERE id = events.entity_id)
+          WHEN events.entity_type = 'connector' THEN (SELECT product_id FROM source_connectors WHERE id = events.entity_id)
+          WHEN events.entity_type = 'automation-playbook' THEN (SELECT product_id FROM automation_playbooks WHERE id = events.entity_id)
+          WHEN events.entity_type = 'automation-run' THEN (SELECT product_id FROM automation_runs WHERE id = events.entity_id)
+          ELSE ''
+        END AS product_id
+      FROM events
       WHERE NOT (event_type = 'system.initialized' AND detail LIKE 'Local distribution ledger initialized with two products%')
       ORDER BY occurred_at DESC, id DESC LIMIT 8
     `).all() as Row[];
@@ -1487,6 +1744,7 @@ export class DistributionDatabase {
       type: String(row.event_type),
       entityType: String(row.entity_type),
       entityId: String(row.entity_id),
+      productId: String(row.product_id || ""),
       detail: String(row.detail),
       occurredAt: String(row.occurred_at),
     }));
@@ -1621,12 +1879,13 @@ export class DistributionDatabase {
     const allowed = new Set(["qualified-visits", "replies", "conversations", "signups", "stars", "revenue"]);
     if (!allowed.has(metric)) throw new Error("Choose a supported outcome metric.");
     if (!Number.isFinite(value) || value < 0 || value > 1_000_000_000) throw new Error("Outcome value must be a non-negative number.");
-    const opportunity = this.database.prepare("SELECT id, product_id, channel_id, title FROM opportunities WHERE id = ?").get(opportunityId) as Row | undefined;
+    const opportunity = this.database.prepare("SELECT id, product_id, channel_id, title, status FROM opportunities WHERE id = ?").get(opportunityId) as Row | undefined;
     if (!opportunity) throw new Error("Opportunity not found");
+    if (opportunity.status !== "approved" && opportunity.status !== "published") throw new Error("Approve the contribution before recording its outcome.");
     const capturedAt = now();
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      this.database.prepare("INSERT INTO outcomes (id, opportunity_id, metric, value, captured_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)")
+      this.database.prepare("INSERT INTO outcomes (id, opportunity_id, metric, value, captured_at, payload_json, source) VALUES (?, ?, ?, ?, ?, ?, 'manual')")
         .run(randomUUID(), opportunityId, metric, value, capturedAt, JSON.stringify({ note: note.trim().slice(0, 500) }));
       this.database.prepare("UPDATE opportunities SET status = 'published' WHERE id = ?").run(opportunityId);
       this.recordEvent("outcome.recorded", "opportunity", opportunityId, `${metric} outcome recorded for ${String(opportunity.title)}: ${value}.`, { metric, value, channelId: opportunity.channel_id, note: note.trim().slice(0, 500) });
@@ -1639,9 +1898,13 @@ export class DistributionDatabase {
 
   getOutcomeMemory(productId: string): Array<{ channelId: string; metric: string; observations: number; total: number; average: number }> {
     return (this.database.prepare(`
-      SELECT o.channel_id, r.metric, COUNT(*) AS observations, SUM(r.value) AS total, AVG(r.value) AS average
-      FROM outcomes r JOIN opportunities o ON o.id = r.opportunity_id
-      WHERE o.product_id = ? GROUP BY o.channel_id, r.metric ORDER BY observations DESC, total DESC
+      WITH latest AS (
+        SELECT r.*, ROW_NUMBER() OVER (PARTITION BY r.opportunity_id, r.metric ORDER BY r.captured_at DESC, r.rowid DESC) AS rank
+        FROM outcomes r
+      )
+      SELECT o.channel_id, latest.metric, COUNT(*) AS observations, SUM(latest.value) AS total, AVG(latest.value) AS average
+      FROM latest JOIN opportunities o ON o.id = latest.opportunity_id
+      WHERE o.product_id = ? AND latest.rank = 1 GROUP BY o.channel_id, latest.metric ORDER BY observations DESC, total DESC
     `).all(productId) as Row[]).map((row) => ({
       channelId: String(row.channel_id), metric: String(row.metric), observations: Number(row.observations), total: Number(row.total), average: Number(row.average),
     }));

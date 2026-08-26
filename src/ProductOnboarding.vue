@@ -222,7 +222,7 @@ function sourcesFor(field: ProductBriefField): string {
   <main class="onboarding-page">
     <header class="onboarding-hero">
       <div>
-        <p class="eyebrow">UNIVERSAL PRODUCT ONBOARDING</p>
+        <p class="eyebrow">PROJECT ONBOARDING</p>
         <h1>Start with the evidence.</h1>
         <p>Choose a project folder or bring whatever explains the product today. Distribution-OS will draft the brief, cite its sources, and ask you to correct what it cannot know.</p>
       </div>
@@ -293,20 +293,22 @@ function sourcesFor(field: ProductBriefField): string {
 
     <section v-else-if="step === 2 && brief" class="onboarding-panel">
       <div class="panel-heading"><div><p class="eyebrow">02 · GENERATED BRIEF</p><h2>Correct the machine’s interpretation.</h2></div><osx-badge :tone="confidenceTone(brief.overallConfidence)">{{ brief.overallConfidence }}% draft confidence</osx-badge></div>
-      <osx-alert
-        :tone="brief.analysis.mode === 'ai' ? 'success' : brief.analysis.mode === 'fallback' ? 'warning' : 'info'"
-        :title="brief.analysis.mode === 'ai' ? 'AI-synthesized and source-cited' : brief.analysis.mode === 'fallback' ? 'AI unavailable—local extraction used' : 'Local evidence extraction'"
-      >
-        {{ brief.analysis.mode === 'ai'
-          ? `${brief.analysis.provider} · ${brief.analysis.model}. Claims without valid source labels remain marked for review.`
-          : brief.analysis.warning || 'Configure a ready model API profile to add cited AI synthesis. The local extraction remains fully editable.' }}
-      </osx-alert>
-      <osx-alert tone="info" title="A proposal, not product truth">Every field remains editable. Low-confidence fields require founder judgment before the brief can be approved.</osx-alert>
+      <div class="brief-alert-stack">
+        <osx-alert
+          :tone="brief.analysis.mode === 'ai' ? 'success' : brief.analysis.mode === 'fallback' ? 'warning' : 'info'"
+          :title="brief.analysis.mode === 'ai' ? 'AI-synthesized and source-cited' : brief.analysis.mode === 'fallback' ? 'AI unavailable—local extraction used' : 'Local evidence extraction'"
+        >
+          {{ brief.analysis.mode === 'ai'
+            ? `${brief.analysis.provider} · ${brief.analysis.model}. Claims without valid source labels remain marked for review.`
+            : brief.analysis.warning || 'Select a ready execution profile to add cited AI synthesis. The local extraction remains fully editable.' }}
+        </osx-alert>
+        <osx-alert tone="info" title="A proposal, not product truth">Every field remains editable. Low-confidence fields require founder judgment before the brief can be approved.</osx-alert>
+      </div>
       <div class="form-grid generated-brief-grid">
         <label><span>Product name</span><input v-model="form.name" required /><small class="field-meta"><osx-badge :tone="confidenceTone(brief.name.confidence)" size="small">{{ brief.name.confidence }}%</osx-badge>{{ sourcesFor(brief.name) }}</small></label>
         <label><span>Stage</span><select v-model="form.stage"><option value="idea">Idea</option><option value="prototype">Prototype</option><option value="early">Early product</option><option value="public-beta">Public beta</option><option value="launched">Launched</option></select></label>
         <label class="wide"><span>Plain-language description</span><textarea v-model="form.description" required></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.description.confidence)" size="small">{{ brief.description.confidence }}%</osx-badge>{{ sourcesFor(brief.description) }}</small></label>
-        <label class="wide" :class="{ 'needs-review': brief.audience.needsReview }"><span>Primary audience {{ brief.audience.needsReview ? '· confirm this' : '' }}</span><input v-model="form.audience" required /><small class="field-meta"><osx-badge :tone="confidenceTone(brief.audience.confidence)" size="small">{{ brief.audience.confidence }}%</osx-badge>{{ sourcesFor(brief.audience) }}</small></label>
+        <label class="wide" :class="{ 'needs-review': brief.audience.needsReview }"><span>Primary audience {{ brief.audience.needsReview ? '· confirm this' : '' }}</span><textarea v-model="form.audience" rows="3" required></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.audience.confidence)" size="small">{{ brief.audience.confidence }}%</osx-badge>{{ sourcesFor(brief.audience) }}</small></label>
         <label class="wide"><span>Positioning hypothesis · confirm this</span><textarea v-model="form.positioning"></textarea><small class="field-meta"><osx-badge :tone="confidenceTone(brief.positioning.confidence)" size="small">{{ brief.positioning.confidence }}%</osx-badge>{{ sourcesFor(brief.positioning) }}</small></label>
       </div>
       <section class="analysis-provenance"><strong>Evidence used</strong><div><osx-badge v-for="item in brief.evidenceClasses" :key="item.classification">{{ item.count }} {{ item.classification }}</osx-badge></div><span>{{ brief.sourceCount }} source{{ brief.sourceCount === 1 ? "" : "s" }} · confidence is derived from coverage, not model certainty</span></section>

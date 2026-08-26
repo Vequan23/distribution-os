@@ -2,12 +2,15 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogle } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText, NoObjectGeneratedError, NoOutputGeneratedError, Output, type LanguageModel } from "ai";
+import { generateText, NoObjectGeneratedError, NoOutputGeneratedError, type LanguageModel } from "ai";
 import type { ZodType } from "zod";
+import type { JsonObject, RunProvenance } from "@vraxis/agent-v";
 import type { ModelProviderId } from "./domain.ts";
 import type { AIControlPlaneStore, ResolvedModelExecution } from "./ai-control-plane.ts";
+import { generateStructuredWithVraxis } from "./vraxis-model-executor.ts";
 
 export interface StructuredGeneration<T> {
+  runId: string;
   output: T;
   provider: ModelProviderId;
   model: string;
@@ -15,6 +18,7 @@ export interface StructuredGeneration<T> {
   inputTokens: number;
   outputTokens: number;
   attempts: number;
+  provenance: RunProvenance;
 }
 
 export interface StructuredGenerationRequest<T> {
@@ -23,6 +27,9 @@ export interface StructuredGenerationRequest<T> {
   prompt: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  projectId?: string;
+  runId?: string;
+  metadata?: JsonObject;
 }
 
 export type StructuredGenerator = <T>(request: StructuredGenerationRequest<T>) => Promise<StructuredGeneration<T>>;
@@ -55,12 +62,6 @@ function languageModel(execution: ResolvedModelExecution): LanguageModel {
       : undefined,
   });
   return compatible(profile.model);
-}
-
-function tokenTotal(value: unknown): number {
-  if (typeof value === "number") return value;
-  if (value && typeof value === "object" && "total" in value && typeof value.total === "number") return value.total;
-  return 0;
 }
 
 export class NativeModelExecutor {
@@ -104,23 +105,30 @@ export class NativeModelExecutor {
     let previousError: unknown;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        const result = await generateText({
+        const result = await generateStructuredWithVraxis({
           model: languageModel(execution),
+          provider: execution.profile.provider,
+          modelId: execution.profile.model,
           instructions: `${request.instructions}${attempt === 2 ? " The previous response failed schema validation. Return a complete object matching the schema exactly." : ""}`,
           prompt: request.prompt.slice(0, 90_000),
-          output: Output.object({ schema: request.schema }),
+          schema: request.schema,
+          projectId: request.projectId || "distribution-os",
+          runId: request.runId ? `${request.runId}:structured:${attempt}` : undefined,
+          metadata: { ...request.metadata, attempt, operation: "structured-generation" },
           abortSignal: request.signal
             ? AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs ?? 60_000)])
             : AbortSignal.timeout(request.timeoutMs ?? 60_000),
         });
         return {
+          runId: result.runId,
           output: result.output,
           provider: execution.profile.provider,
           model: execution.profile.model,
           durationMs: Date.now() - startedAt,
-          inputTokens: tokenTotal(result.usage.inputTokens),
-          outputTokens: tokenTotal(result.usage.outputTokens),
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
           attempts: attempt,
+          provenance: result.provenance,
         };
       } catch (error) {
         previousError = error;

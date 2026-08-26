@@ -11,6 +11,7 @@ import type {
   ModelProfile,
   ModelProviderId,
   ProviderCatalogEntry,
+  RuntimeFailureCode,
 } from "./domain.ts";
 
 const execFileAsync = promisify(execFile);
@@ -44,6 +45,16 @@ interface StoredSettings {
   version: 1;
   profiles: StoredModelProfile[];
   execution: AIExecutionProfile;
+  runtimeVerifications: Partial<Record<AgentRuntimeId, StoredRuntimeVerification>>;
+}
+
+interface StoredRuntimeVerification {
+  status: "ready" | "failed";
+  checkedAt: string;
+  durationMs: number;
+  failureCode?: RuntimeFailureCode;
+  detail: string;
+  version: string;
 }
 
 interface RuntimeDefinition {
@@ -98,7 +109,7 @@ export async function inspectRuntime(definition: RuntimeDefinition, runner: Runt
   return { stdout: result.stdout, stderr: result.stderr };
 }): Promise<AgentRuntimeStatus> {
   if (definition.id === "native") {
-    return { ...definition, available: true, availability: "available", detail: "Distribution-OS owns planning, tools, memory, approvals, and the learning loop." };
+    return { ...definition, available: true, availability: "available", verification: "ready", verificationDetail: "Built-in runtime ready.", detail: "Distribution-OS owns planning, tools, memory, approvals, and the learning loop." };
   }
   try {
     const { stdout, stderr } = await runner(definition.command, ["--version"]);
@@ -108,19 +119,21 @@ export async function inspectRuntime(definition: RuntimeDefinition, runner: Runt
         const auth = await runner(definition.command, ["auth", "status"]);
         const status = JSON.parse(auth.stdout) as { loggedIn?: boolean };
         if (status.loggedIn !== true) {
-          return { ...definition, available: false, availability: "setup-required", version, detail: "Claude Code is installed but not authenticated. Run claude auth login." };
+          return { ...definition, available: false, availability: "setup-required", verification: "not-applicable", verificationDetail: "Authenticate before testing.", version, detail: "Claude Code is installed but not authenticated. Run claude auth login." };
         }
       } catch {
-        return { ...definition, available: false, availability: "setup-required", version, detail: "Claude Code is installed, but authentication could not be verified. Run claude auth status." };
+        return { ...definition, available: false, availability: "setup-required", verification: "not-applicable", verificationDetail: "Authenticate before testing.", version, detail: "Claude Code is installed, but authentication could not be verified. Run claude auth status." };
       }
     }
-    return { ...definition, available: true, availability: "available", version, detail: `${definition.name} is installed. Authentication is verified by the runtime when a run starts; its internal tool loop remains runtime-owned.` };
+    return { ...definition, available: true, availability: "available", verification: "unverified", verificationDetail: "Installed but not yet tested through Distribution-OS.", version, detail: `${definition.name} is installed. Run a bounded readiness test before relying on it for onboarding or planning.` };
   } catch (error) {
     const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
     return {
       ...definition,
       available: false,
       availability: missing ? "missing" : "setup-required",
+      verification: "not-applicable",
+      verificationDetail: missing ? "Install the runtime before testing." : "Finish runtime setup before testing.",
       detail: missing ? `${definition.name} is not installed or is not on PATH.` : `${definition.name} could not be started: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
@@ -145,9 +158,9 @@ export class AIControlPlaneStore {
       const execution = value.execution && runtimeCatalog.some((runtime) => runtime.id === value.execution?.runtimeId)
         ? { ...defaultExecution(), ...value.execution }
         : defaultExecution();
-      return { version: 1, profiles: Array.isArray(value.profiles) ? value.profiles : [], execution };
+      return { version: 1, profiles: Array.isArray(value.profiles) ? value.profiles : [], execution, runtimeVerifications: value.runtimeVerifications && typeof value.runtimeVerifications === "object" ? value.runtimeVerifications : {} };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, profiles: [], execution: defaultExecution() };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, profiles: [], execution: defaultExecution(), runtimeVerifications: {} };
       throw error;
     }
   }
@@ -192,10 +205,23 @@ export class AIControlPlaneStore {
 
   async getPublicState(): Promise<AIControlPlane> {
     const settings = await this.readSettings();
-    const [profiles, runtimes] = await Promise.all([
+    const [profiles, discoveredRuntimes] = await Promise.all([
       Promise.all(settings.profiles.map((profile) => this.publicProfile(profile))),
       this.inspectRuntimes(),
     ]);
+    const runtimes = discoveredRuntimes.map((runtime) => {
+      if (runtime.id === "native" || !runtime.available) return runtime;
+      const verification = settings.runtimeVerifications[runtime.id];
+      if (!verification || verification.version !== runtime.version) return runtime;
+      return {
+        ...runtime,
+        verification: verification.status,
+        verifiedAt: verification.checkedAt,
+        verificationDurationMs: verification.durationMs,
+        failureCode: verification.failureCode,
+        verificationDetail: verification.detail,
+      };
+    });
     return {
       generatedAt: new Date().toISOString(),
       secureStorage: process.platform === "darwin" ? "macOS Keychain" : "environment variables",
@@ -204,6 +230,25 @@ export class AIControlPlaneStore {
       runtimes,
       execution: settings.execution,
     };
+  }
+
+  async recordRuntimeVerification(runtimeId: AgentRuntimeId, input: { ok: boolean; durationMs: number; failureCode?: RuntimeFailureCode; detail: string }): Promise<AIControlPlane> {
+    if (runtimeId === "native") throw new Error("The built-in runtime does not require an external readiness test.");
+    const definition = runtimeCatalog.find((runtime) => runtime.id === runtimeId);
+    if (!definition) throw new Error("Choose a supported agent runtime.");
+    const runtime = await inspectRuntime(definition, this.runner);
+    if (!runtime.available || !runtime.version) throw new Error(`${runtime.detail} Finish runtime setup before testing it.`);
+    const settings = await this.readSettings();
+    settings.runtimeVerifications[runtimeId] = {
+      status: input.ok ? "ready" : "failed",
+      checkedAt: new Date().toISOString(),
+      durationMs: Math.max(0, Math.round(input.durationMs)),
+      failureCode: input.failureCode,
+      detail: input.detail.slice(0, 240),
+      version: runtime.version,
+    };
+    await this.writeSettings(settings);
+    return this.getPublicState();
   }
 
   async getActiveModelExecution(): Promise<ResolvedModelExecution | null> {

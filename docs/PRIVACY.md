@@ -6,7 +6,7 @@ Distribution-OS is local-first because product positioning, founder voice, draft
 
 - Approved product memory and bounded source excerpts
 - Public discussion URLs or bounded audience excerpts the founder explicitly captures, including dismissed Signal Inbox candidates retained as decision history
-- Read-only connector metadata, sync timestamps, safe rate-limit state, and bounded GitHub issue excerpts imported for review
+- Read-only connector metadata, sync timestamps, safe rate-limit state, and bounded GitHub issue or DEV article excerpts imported for review
 - Generated drafts and opportunity evidence links
 - Human decisions and manually captured outcomes
 - Harness run/step metadata and concise failure diagnostics
@@ -24,7 +24,9 @@ Distribution-OS is local-first because product positioning, founder voice, draft
 - Unbounded dependency trees, build output, repository history, or binary files
 - Connector passwords, embedded URL credentials, arbitrary shell commands, or managed-gateway tokens
 
-API keys entered in the macOS UI use Keychain. Environment variables are supported for automated setups. Runtime workspaces are created in the operating system's temporary directory and deleted after the run.
+Model and DEV API keys entered in the macOS UI use Keychain. Environment variables are supported for automated setups. Runtime workspaces are created in the operating system's temporary directory and deleted after the run.
+
+Deleting an evidence loop preserves its historical runs, decisions, and outcomes because those records inform later recommendations. Permanently deleting a project requires typed confirmation and removes all project-linked local ledger data, including evidence, signals, opportunities, outcomes, connectors, automation and harness runs, linked action executions, and events. A shared DEV credential in Keychain is not deleted with a project, but a DEV configuration scoped to that project is disconnected and cleared.
 
 `GITHUB_TOKEN` is read only from the service environment. It is never copied into SQLite, UI state, events, or imported signal records.
 
@@ -32,4 +34,4 @@ Action Fabric registration follows the same rule. MCP URLs cannot include creden
 
 ## Public actions
 
-The current product does not publish automatically. Automation may refresh a configured read-only source, generate a bounded plan, and prepare an editable draft, but the kernel stops in a human approval state. The global pause control stops new scheduled observation and preparation. A separately requested identity-bearing connection call requires review of its sanitized payload and one-time explicit approval. Every future connector must expose its transport, capabilities, permissions, limits, and public side effects before it can execute.
+The current product does not publish automatically. Automation may refresh a configured read-only source, generate a bounded plan, and prepare an editable draft, but the kernel stops in a human approval state. The global pause control stops new scheduled observation and preparation. DEV may publish only after the contribution is approved and the founder separately confirms the real action; the receipt and outcome snapshots are stored locally. A separately requested identity-bearing Action Fabric call still requires review of its sanitized payload and one-time explicit approval.

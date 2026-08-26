@@ -10,13 +10,15 @@ export type EvidenceClassification = "intent" | "public-claim" | "implementation
 export type ModelProviderId = "openai" | "anthropic" | "google" | "deepseek" | "openrouter" | "groq" | "ollama" | "openai-compatible";
 export type AgentRuntimeId = "native" | "claude-code" | "cursor" | "opencode" | "codex";
 export type RuntimeAvailability = "available" | "setup-required" | "missing";
+export type RuntimeVerification = "not-applicable" | "unverified" | "ready" | "failed";
+export type RuntimeFailureCode = "authentication-required" | "timeout" | "invocation-failed" | "empty-response" | "invalid-json" | "schema-invalid";
 export type AnalysisMode = "local" | "ai" | "fallback";
 export type HarnessRunKind = "onboarding" | "distribution-plan" | "contribution-draft" | "runtime-task";
 export type HarnessRunStatus = "running" | "completed" | "failed" | "fallback";
 export type HarnessStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 export type SignalStatus = "new" | "accepted" | "dismissed";
 export type SignalKind = "question" | "pain" | "request" | "mention" | "unknown";
-export type SignalOrigin = "manual" | "github";
+export type SignalOrigin = "manual" | "github" | "devto";
 export type ConnectorKind = "github";
 export type ConnectorStatus = "connected" | "error";
 export type AutomationTriggerKind = "manual" | "schedule";
@@ -49,10 +51,24 @@ export interface AgentRuntimeStatus {
   command: string;
   available: boolean;
   availability: RuntimeAvailability;
+  verification: RuntimeVerification;
+  verifiedAt?: string;
+  verificationDurationMs?: number;
+  failureCode?: RuntimeFailureCode;
+  verificationDetail: string;
   version?: string;
   detail: string;
   ownsModelSelection: boolean;
   capabilities: string[];
+}
+
+export interface RuntimeTestResult {
+  ok: boolean;
+  runtimeId: AgentRuntimeId;
+  durationMs: number;
+  failureCode?: RuntimeFailureCode;
+  detail: string;
+  controlPlane: AIControlPlane;
 }
 
 export interface AIExecutionProfile {
@@ -82,6 +98,7 @@ export interface Product {
   audience: string;
   objective: string;
   positioning: string;
+  voiceGuidance: string;
   confidence: number;
   onboardingStatus: "draft" | "ready";
 }
@@ -94,6 +111,36 @@ export interface Channel {
   status: "connected" | "manual" | "planned";
   dailyLimit: number;
   connected: boolean;
+  connector: {
+    kind: "devto" | "none";
+    configured: boolean;
+    authenticated: boolean;
+    credentialSource: "environment" | "keychain" | "none";
+    productId: string;
+    signalQuery: string;
+    publishTags: string[];
+    lastSignalSyncAt: string;
+    lastOutcomeSyncAt: string;
+    detail: string;
+  };
+}
+
+export interface ChannelExecution {
+  id: string;
+  opportunityId: string;
+  channelId: string;
+  externalId: string;
+  externalUrl: string;
+  status: "pending" | "published" | "failed";
+  executedAt: string;
+  lastSyncedAt: string;
+}
+
+export interface OutcomeObservation {
+  metric: string;
+  value: number;
+  source: "manual" | "connector";
+  capturedAt: string;
 }
 
 export interface ChannelPolicyInput {
@@ -230,6 +277,7 @@ export interface OnboardProductInput {
   audience: string;
   objective: string;
   positioning: string;
+  voiceGuidance?: string;
   websiteUrl?: string;
   repositoryUrl?: string;
   sources: OnboardingSourceInput[];
@@ -365,6 +413,8 @@ export interface Opportunity {
   status: OpportunityStatus;
   discoveredAt: string;
   evidence: Evidence[];
+  execution: ChannelExecution | null;
+  outcomes: OutcomeObservation[];
 }
 
 export interface DistributionEvent {
@@ -372,6 +422,7 @@ export interface DistributionEvent {
   type: string;
   entityType: string;
   entityId: string;
+  productId: string;
   detail: string;
   occurredAt: string;
 }
