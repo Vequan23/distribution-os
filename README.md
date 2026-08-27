@@ -68,19 +68,14 @@ Every proposed move must answer four questions:
 
 ## Quick start
 
-### Requirements
-
-- Node.js 22.12 or later; Node.js 24 LTS is recommended
-- npm
+Install Distribution OS, then open it:
 
 ```bash
-git clone https://github.com/Vequan23/distribution-os.git
-cd distribution-os
-npm install
-npm run dev
+npm install -g @vraxis/distribution-os
+distribution-os
 ```
 
-Open [http://127.0.0.1:4190](http://127.0.0.1:4190). The Vite app proxies the local service at `http://127.0.0.1:4191`.
+The command starts the local service and opens Distribution OS in your default browser. It requires Node.js 22.12 or later. Use `distribution-os --no-open` to start without opening a browser, or `distribution-os --port 4400` to choose another port. Press Ctrl+C to stop it.
 
 ### Your first loop
 
@@ -206,6 +201,10 @@ Those capabilities must be connected, observable, and permissioned before the pr
 ## Development
 
 ```bash
+# Install dependencies and start the development servers
+npm install
+npm run dev
+
 # Unit and integration tests
 npm test
 

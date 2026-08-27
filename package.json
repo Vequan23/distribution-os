@@ -1,9 +1,33 @@
 {
-  "name": "distribution-os",
+  "name": "@vraxis/distribution-os",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "A local-first distribution harness for technical products.",
+  "files": [
+    "dist",
+    "dist-server",
+    "docs",
+    "README.md"
+  ],
+  "bin": {
+    "distribution-os": "dist-server/server/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vequan23/distribution-os.git"
+  },
+  "homepage": "https://distribution-os-murex.vercel.app/",
+  "bugs": "https://github.com/Vequan23/distribution-os/issues",
+  "keywords": [
+    "distribution",
+    "local-first",
+    "agent-v",
+    "developer-tools",
+    "technical-marketing"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.12"
   },
@@ -12,10 +36,12 @@
     "dev:service": "node --watch --no-warnings --experimental-strip-types server/index.ts",
     "dev:ui": "vite",
     "dev:marketing": "vite --config vite.marketing.config.ts",
+    "open": "node --no-warnings --experimental-strip-types server/cli.ts",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.server.json",
     "typecheck:marketing": "vue-tsc --noEmit -p tsconfig.marketing.json",
     "build": "npm run typecheck && tsc -p tsconfig.server.json && vite build",
     "build:marketing": "npm run typecheck:marketing && vite build --config vite.marketing.config.ts",
+    "prepack": "npm run build",
     "start": "node --no-warnings dist-server/server/index.js",
     "test": "node --no-warnings --experimental-strip-types --test test/*.test.ts",
     "check": "npm test && npm run build"

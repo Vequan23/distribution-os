@@ -24,7 +24,7 @@ function scrollToId(id: string): void {
 }
 
 function openWorkspace(): void {
-  window.open("https://github.com/Vequan23/distribution-os#quick-start", "_blank", "noopener,noreferrer");
+  window.open("https://www.npmjs.com/package/@vraxis/distribution-os", "_blank", "noopener,noreferrer");
 }
 
 function openSource(): void {

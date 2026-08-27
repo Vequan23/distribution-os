@@ -20,3 +20,9 @@ test("marketing ecosystem uses the canonical portfolio URL", async () => {
   assert.match(app, /href: "https:\/\/vqclark\.vercel\.app\/"/);
   assert.doesNotMatch(app, /vqclark\.vequanclark\.chatgpt\.site/);
 });
+
+test("marketing get-started actions point to the public npm package", async () => {
+  const app = await readFile(join(root, "marketing/src/MarketingApp.vue"), "utf8");
+  assert.match(app, /https:\/\/www\.npmjs\.com\/package\/@vraxis\/distribution-os/);
+  assert.doesNotMatch(app, /distribution-os#quick-start/);
+});
