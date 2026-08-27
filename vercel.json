@@ -1,6 +1,5 @@
 {
   "buildCommand": "npm run build:marketing",
   "outputDirectory": "dist-marketing",
-  "framework": "vite",
-  "cleanUrls": true
+  "framework": "vite"
 }
