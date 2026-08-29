@@ -37,6 +37,7 @@ async function devJson<T>(fetcher: Fetcher, path: string, options: RequestInit =
 }
 
 export class DevToConnector {
+  readonly channelId = "devto";
   private readonly database: DistributionDatabase;
   private readonly fetcher: Fetcher;
   private readonly credentialStore: DevToCredentialStoreLike;
@@ -101,7 +102,7 @@ export class DevToConnector {
       throw error;
     }
     this.database.finishDevToExecution(pending.executionId, String(article.id), article.url, { publishedAt: article.published_at || article.published_timestamp || "" });
-    this.database.recordConnectorOutcomes(pending.executionId, opportunityId, [
+    this.database.recordConnectorOutcomes(pending.executionId, opportunityId, this.channelId, [
       { metric: "views", value: article.page_views_count ?? 0 },
       { metric: "reactions", value: article.public_reactions_count ?? article.positive_reactions_count ?? 0 },
       { metric: "comments", value: article.comments_count ?? 0 },
@@ -117,7 +118,7 @@ export class DevToConnector {
     for (const execution of executions) {
       const article = ownArticles.find((item) => String(item.id) === execution.externalId)
         ?? await devJson<DevArticle>(this.fetcher, `/articles/${encodeURIComponent(execution.externalId)}`);
-      this.database.recordConnectorOutcomes(execution.id, execution.opportunityId, [
+      this.database.recordConnectorOutcomes(execution.id, execution.opportunityId, this.channelId, [
         { metric: "views", value: article.page_views_count ?? 0 },
         { metric: "reactions", value: article.public_reactions_count ?? article.positive_reactions_count ?? 0 },
         { metric: "comments", value: article.comments_count ?? 0 },

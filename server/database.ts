@@ -420,6 +420,8 @@ export class DistributionDatabase {
     this.addColumn("action_adapters", "discovered_tools_json", "TEXT NOT NULL DEFAULT '[]'");
     this.addColumn("action_executions", "approved_at", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("action_executions", "dry_run", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("channel_connections", "account_id", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("channel_connections", "account_name", "TEXT NOT NULL DEFAULT ''");
   }
 
   private addColumn(table: string, column: string, definition: string): void {
@@ -430,47 +432,52 @@ export class DistributionDatabase {
   }
 
   private seedChannels(): void {
-    const count = this.database.prepare("SELECT COUNT(*) AS count FROM channels").get() as Row;
     const createdAt = now();
-    if (Number(count.count) === 0) {
-      const insertChannel = this.database.prepare(`
-        INSERT INTO channels (id, name, handle, mode, status, daily_limit, connected, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      insertChannel.run("linkedin", "LinkedIn", "Personal profile", "approval", "manual", 1, 0, createdAt);
-      insertChannel.run("bluesky", "Bluesky", "Not connected", "approval", "planned", 2, 0, createdAt);
-      insertChannel.run("x", "X", "Not connected", "approval", "planned", 2, 0, createdAt);
-      insertChannel.run("devto", "Dev.to", "DEV connector", "approval", "manual", 1, 0, createdAt);
-    }
+    const supportedChannels = [
+      ["linkedin", "LinkedIn", "Personal profile", "approval", "manual", 1],
+      ["devto", "Dev.to", "DEV connector", "approval", "manual", 1],
+    ] as const;
+    const insertChannel = this.database.prepare(`
+      INSERT OR IGNORE INTO channels (id, name, handle, mode, status, daily_limit, connected, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+    `);
+    for (const channel of supportedChannels) insertChannel.run(...channel, createdAt);
+
     this.database.prepare("INSERT OR IGNORE INTO channel_connections (channel_id, updated_at) VALUES ('devto', ?)").run(createdAt);
+    this.database.prepare("INSERT OR IGNORE INTO channel_connections (channel_id, updated_at) VALUES ('linkedin', ?)").run(createdAt);
     this.database.prepare("UPDATE channels SET handle = 'DEV connector', mode = 'approval' WHERE id = 'devto'").run();
   }
 
   private mapChannel(row: Row): Channel {
-    const connection = row.id === "devto"
-      ? this.database.prepare("SELECT * FROM channel_connections WHERE channel_id = 'devto'").get() as Row | undefined
+    const hasConnector = row.id === "devto" || row.id === "linkedin";
+    const connection = hasConnector
+      ? this.database.prepare("SELECT * FROM channel_connections WHERE channel_id = ?").get(row.id) as Row | undefined
       : undefined;
-    const credentialSource = process.env.DEVTO_API_KEY?.trim()
-      ? "environment"
-      : String(connection?.credential_source || "none") as "environment" | "keychain" | "none";
+    const environmentCredential = row.id === "devto" ? process.env.DEVTO_API_KEY?.trim() : row.id === "linkedin" ? process.env.LINKEDIN_ACCESS_TOKEN?.trim() : "";
+    const credentialSource = environmentCredential ? "environment" : String(connection?.credential_source || "none") as "environment" | "keychain" | "none";
     return {
       id: String(row.id), name: String(row.name), handle: String(row.handle), mode: String(row.mode) as Channel["mode"],
       status: String(row.status) as Channel["status"], dailyLimit: Number(row.daily_limit), connected: Boolean(row.connected),
       connector: {
-        kind: row.id === "devto" ? "devto" : "none",
-        configured: row.id === "devto" && Boolean(connection?.signal_query),
-        authenticated: row.id === "devto" && credentialSource !== "none",
-        credentialSource: row.id === "devto" ? credentialSource : "none",
+        kind: row.id === "devto" ? "devto" : row.id === "linkedin" ? "linkedin" : "none",
+        configured: row.id === "devto" ? Boolean(connection?.signal_query) : row.id === "linkedin" ? credentialSource !== "none" : false,
+        authenticated: hasConnector && credentialSource !== "none",
+        credentialSource: hasConnector ? credentialSource : "none",
         productId: row.id === "devto" ? String(connection?.product_id || "") : "",
         signalQuery: row.id === "devto" ? String(connection?.signal_query || "") : "",
         publishTags: row.id === "devto" ? JSON.parse(String(connection?.publish_tags_json || "[]")) as string[] : [],
+        accountName: row.id === "linkedin" ? String(connection?.account_name || "") : "",
         lastSignalSyncAt: row.id === "devto" ? String(connection?.last_signal_sync_at || "") : "",
         lastOutcomeSyncAt: row.id === "devto" ? String(connection?.last_outcome_sync_at || "") : "",
         detail: row.id === "devto"
           ? credentialSource !== "none"
             ? "A verified credential is available for founder-approved publishing."
             : "Public signal discovery needs no key. Publishing and authenticated outcome capture require one."
-          : "No real connector is implemented for this channel.",
+          : row.id === "linkedin"
+            ? connection?.account_id && credentialSource !== "none"
+              ? `Verified as ${String(connection.account_name || "LinkedIn member")}. Founder-approved text posts and outcome refresh are available.`
+              : "Connect a member access token to publish founder-approved text posts. Engagement reads depend on LinkedIn API access."
+            : "No real connector is implemented for this channel.",
       },
     };
   }
@@ -703,7 +710,7 @@ export class DistributionDatabase {
       sourceUrl: String(item.source_url), occurredAt: String(item.occurred_at), sourceType: String(item.source_type) as Evidence["sourceType"],
       classification: String(item.classification) as Evidence["classification"], confidence: Number(item.confidence),
     }));
-    const channels = (this.database.prepare("SELECT * FROM channels ORDER BY connected DESC, name").all() as Row[]).map((item) => this.mapChannel(item));
+    const channels = (this.database.prepare("SELECT * FROM channels WHERE id IN ('linkedin', 'devto') ORDER BY connected DESC, name").all() as Row[]).map((item) => this.mapChannel(item));
     return { product, evidence, channels };
   }
 
@@ -872,6 +879,74 @@ export class DistributionDatabase {
     this.recordEvent("channel.devto.credential", "channel", "devto", source === "keychain" ? "DEV credential verified and stored in macOS Keychain." : "Stored DEV credential removed.", { source });
   }
 
+  configureLinkedInIdentity(accountId: string, accountName: string, source: "keychain" | "environment"): void {
+    if (!/^urn:li:person:[A-Za-z0-9_-]+$/.test(accountId)) throw new Error("LinkedIn returned an invalid member identity.");
+    const displayName = accountName.trim().replace(/\s+/g, " ").slice(0, 160) || "LinkedIn member";
+    this.database.prepare("UPDATE channel_connections SET account_id = ?, account_name = ?, credential_source = ?, updated_at = ? WHERE channel_id = 'linkedin'")
+      .run(accountId, displayName, source, now());
+    this.database.prepare("UPDATE channels SET connected = 1, status = 'connected', mode = 'approval', handle = ? WHERE id = 'linkedin'").run(displayName);
+    this.recordEvent("channel.linkedin.credential", "channel", "linkedin", `LinkedIn connection verified for ${displayName}. Public execution still requires approval and confirmation.`, { source });
+  }
+
+  getLinkedInConnection(): { accountId: string; accountName: string; lastOutcomeSyncAt: string } {
+    const row = this.database.prepare("SELECT account_id, account_name, last_outcome_sync_at FROM channel_connections WHERE channel_id = 'linkedin'").get() as Row | undefined;
+    return { accountId: String(row?.account_id || ""), accountName: String(row?.account_name || ""), lastOutcomeSyncAt: String(row?.last_outcome_sync_at || "") };
+  }
+
+  disconnectLinkedIn(): void {
+    this.database.prepare("UPDATE channel_connections SET account_id = '', account_name = '', credential_source = 'none', updated_at = ? WHERE channel_id = 'linkedin'").run(now());
+    this.database.prepare("UPDATE channels SET connected = 0, status = 'manual', mode = 'approval', handle = 'Personal profile' WHERE id = 'linkedin'").run();
+    this.recordEvent("channel.linkedin.disconnected", "channel", "linkedin", "LinkedIn was disconnected. Existing publication receipts and outcomes were preserved.", {});
+  }
+
+  beginChannelExecution(opportunityId: string, channelId: string): { executionId: string; draftCopy: string; accountId: string } {
+    const row = this.database.prepare(`
+      SELECT o.id, o.draft_copy, o.status, o.channel_id, c.daily_limit
+      FROM opportunities o JOIN channels c ON c.id = o.channel_id WHERE o.id = ?
+    `).get(opportunityId) as Row | undefined;
+    if (!row) throw new Error("Opportunity not found");
+    if (row.channel_id !== channelId) throw new Error(`This approved contribution belongs to ${String(row.channel_id)}, not ${channelId}.`);
+    if (row.status !== "approved") throw new Error("Approve the current draft before publishing it.");
+    const connection = this.database.prepare("SELECT account_id FROM channel_connections WHERE channel_id = ?").get(channelId) as Row | undefined;
+    if (!connection?.account_id) throw new Error("Connect and verify this channel before publishing.");
+    const existing = this.database.prepare("SELECT id, status FROM channel_executions WHERE opportunity_id = ?").get(opportunityId) as Row | undefined;
+    if (existing?.status === "published" || existing?.status === "pending") throw new Error("This contribution already has an execution receipt.");
+    const today = this.database.prepare("SELECT COUNT(*) AS count FROM channel_executions WHERE channel_id = ? AND status = 'published' AND date(executed_at) = date('now')").get(channelId) as Row;
+    if (Number(today.count) >= Number(row.daily_limit)) throw new Error(`The ${channelId} daily limit has been reached.`);
+    const executionId = existing ? String(existing.id) : randomUUID();
+    if (existing) this.database.prepare("UPDATE channel_executions SET status = 'pending', external_id = '', external_url = '', executed_at = ?, payload_json = '{}' WHERE id = ?").run(now(), executionId);
+    else this.database.prepare("INSERT INTO channel_executions (id, opportunity_id, channel_id, status, executed_at) VALUES (?, ?, ?, 'pending', ?)").run(executionId, opportunityId, channelId, now());
+    return { executionId, draftCopy: String(row.draft_copy), accountId: String(connection.account_id) };
+  }
+
+  finishChannelExecution(executionId: string, channelId: string, externalId: string, externalUrl: string, payload: Record<string, unknown>): void {
+    const execution = this.database.prepare("SELECT opportunity_id FROM channel_executions WHERE id = ? AND channel_id = ? AND status = 'pending'").get(executionId, channelId) as Row | undefined;
+    if (!execution) throw new Error("Pending execution receipt not found");
+    const executedAt = now();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare("UPDATE channel_executions SET external_id = ?, external_url = ?, status = 'published', executed_at = ?, last_synced_at = ?, payload_json = ? WHERE id = ?")
+        .run(externalId, externalUrl, executedAt, executedAt, JSON.stringify(payload), executionId);
+      this.database.prepare("UPDATE opportunities SET status = 'published', scheduled_for = NULL WHERE id = ?").run(execution.opportunity_id);
+      this.recordEvent("opportunity.executed", "opportunity", String(execution.opportunity_id), `Founder-approved contribution published to ${channelId}: ${externalUrl}`, { executionId, externalId, externalUrl, channelId });
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  failChannelExecution(executionId: string, channelId: string, message: string): void {
+    this.database.prepare("UPDATE channel_executions SET status = 'failed', payload_json = ? WHERE id = ? AND channel_id = ? AND status = 'pending'").run(JSON.stringify({ error: message.slice(0, 500) }), executionId, channelId);
+    this.recordEvent("opportunity.execution.failed", "execution", executionId, `${channelId} execution failed: ${message.slice(0, 300)}`, { channelId });
+  }
+
+  getPublishedChannelExecutions(channelId: string): Array<{ id: string; opportunityId: string; externalId: string }> {
+    return (this.database.prepare("SELECT id, opportunity_id, external_id FROM channel_executions WHERE channel_id = ? AND status = 'published'").all(channelId) as Row[]).map((row) => ({
+      id: String(row.id), opportunityId: String(row.opportunity_id), externalId: String(row.external_id),
+    }));
+  }
+
   importDevToSignals(productId: string, articles: Array<{ id: number; title: string; description: string; url: string; publishedAt: string; reactions: number; comments: number }>): number {
     const sources: IngestedSource[] = articles.slice(0, 8).map((article) => ({
       type: "url",
@@ -935,7 +1010,7 @@ export class DistributionDatabase {
     }));
   }
 
-  recordConnectorOutcomes(executionId: string, opportunityId: string, metrics: Array<{ metric: string; value: number }>): void {
+  recordConnectorOutcomes(executionId: string, opportunityId: string, channelId: string, metrics: Array<{ metric: string; value: number }>): void {
     const capturedAt = now();
     this.database.exec("BEGIN IMMEDIATE");
     try {
@@ -946,13 +1021,17 @@ export class DistributionDatabase {
           .run(randomUUID(), opportunityId, metric.metric, metric.value, capturedAt);
       }
       this.database.prepare("UPDATE channel_executions SET last_synced_at = ? WHERE id = ?").run(capturedAt, executionId);
-      this.database.prepare("UPDATE channel_connections SET last_outcome_sync_at = ?, updated_at = ? WHERE channel_id = 'devto'").run(capturedAt, capturedAt);
-      this.recordEvent("outcome.devto.synced", "opportunity", opportunityId, `DEV outcomes synchronized: ${metrics.map((metric) => `${metric.metric} ${metric.value}`).join(", ")}.`, { executionId, metrics });
+      this.database.prepare("UPDATE channel_connections SET last_outcome_sync_at = ?, updated_at = ? WHERE channel_id = ?").run(capturedAt, capturedAt, channelId);
+      this.recordEvent(`outcome.${channelId}.synced`, "opportunity", opportunityId, `${channelId} outcomes synchronized: ${metrics.map((metric) => `${metric.metric} ${metric.value}`).join(", ")}.`, { executionId, metrics, channelId });
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  recordOutcomeSyncFailure(executionId: string, channelId: string, message: string): void {
+    this.recordEvent(`outcome.${channelId}.sync-failed`, "execution", executionId, `${channelId} outcome refresh failed: ${message.slice(0, 300)}`, { channelId });
   }
 
   upsertSourceConnector(input: {
@@ -1635,7 +1714,7 @@ export class DistributionDatabase {
       onboardingStatus: String(row.onboarding_status) as Product["onboardingStatus"],
     }));
 
-    const channelRows = this.database.prepare("SELECT * FROM channels ORDER BY connected DESC, name").all() as Row[];
+    const channelRows = this.database.prepare("SELECT * FROM channels WHERE id IN ('linkedin', 'devto') ORDER BY connected DESC, name").all() as Row[];
     const channels: Channel[] = channelRows.map((row) => this.mapChannel(row));
 
     const opportunityRows = this.database.prepare(`

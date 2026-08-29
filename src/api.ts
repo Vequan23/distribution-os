@@ -1,5 +1,6 @@
 import type { AgentRuntimeId, AIControlPlane, AutomationPlaybook, AutomationRun, ChannelMode, ContributionDraftResult, DashboardState, DistributionPlan, ModelProviderId, OnboardProductInput, OnboardingSourceInput, PlanApplication, ProductBriefDraft, RuntimeTestResult, SourceConnector } from "../server/domain.ts";
 import type { ActionAdapterDescriptor, ActionCapability, ActionDecision, ActionExecutionRecord, ActionTransport } from "../packages/action-fabric/src/index.ts";
+import type { OAuthSessionSnapshot } from "../packages/connection-broker/src/contracts.ts";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -191,6 +192,22 @@ export function connectGitHubSource(productId: string, repository: string): Prom
 
 export function saveDevToCredential(apiKey: string): Promise<DashboardState> {
   return request<DashboardState>("/api/connectors/devto/credential", { method: "POST", body: JSON.stringify({ apiKey }) });
+}
+
+export function saveLinkedInCredential(accessToken: string): Promise<DashboardState> {
+  return request<DashboardState>("/api/connectors/linkedin/credential", { method: "POST", body: JSON.stringify({ accessToken }) });
+}
+
+export function startLinkedInOAuth(clientId: string): Promise<{ session: OAuthSessionSnapshot }> {
+  return request<{ session: OAuthSessionSnapshot }>("/api/connectors/linkedin/oauth/start", { method: "POST", body: JSON.stringify({ clientId }) });
+}
+
+export function getLinkedInOAuthSession(id: string): Promise<{ session: OAuthSessionSnapshot; dashboard: DashboardState }> {
+  return request<{ session: OAuthSessionSnapshot; dashboard: DashboardState }>(`/api/connectors/linkedin/oauth/sessions/${encodeURIComponent(id)}`);
+}
+
+export function disconnectLinkedIn(): Promise<DashboardState> {
+  return request<DashboardState>("/api/connectors/linkedin/oauth", { method: "DELETE" });
 }
 
 export function connectDevTo(productId: string, signalQuery: string, publishTags: string[]): Promise<{ imported: number; dashboard: DashboardState }> {

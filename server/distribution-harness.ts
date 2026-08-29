@@ -11,7 +11,7 @@ export const planSchema = z.object({
   summary: z.string().min(20).max(700),
   assumptions: z.array(z.string().min(4).max(240)).max(8),
   moves: z.array(z.object({
-    channelId: z.enum(["linkedin", "bluesky", "x", "devto"]),
+    channelId: z.enum(["linkedin", "devto"]),
     type: z.enum(["owned-post", "community-contribution", "durable-content"]),
     title: z.string().min(8).max(160),
     whyNow: z.string().min(12).max(420),

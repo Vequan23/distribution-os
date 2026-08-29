@@ -11,11 +11,16 @@ import { writeContributionDraft } from "./contribution-harness.ts";
 import { AgentRuntimeExecutor } from "./runtime-executor.ts";
 import { GitHubConnectorService } from "./github-connector.ts";
 import { DevToConnector } from "./devto-connector.ts";
+import { LinkedInConnector } from "./linkedin-connector.ts";
+import { LinkedInCredentialStore } from "./linkedin-credential-store.ts";
+import { createLinkedInOAuthProvider } from "./linkedin-oauth.ts";
+import { ChannelPublisherRegistry } from "./channel-publisher.ts";
 import { AutomationKernel } from "./automation-kernel.ts";
 import { DistributionActionFabric } from "./action-fabric.ts";
 import { ActionConnectionService } from "./action-connections.ts";
 import { isTrustedLocalRequest } from "./local-request.ts";
 import { isProductStage, type AgentRuntimeId, type ChannelMode, type OnboardProductInput, type OnboardingSourceInput } from "./domain.ts";
+import { OAuthConnectionBroker, SystemBrowserLauncher, decodeOAuthCredential } from "../packages/connection-broker/src/index.ts";
 
 const port = Number(process.env.DISTRIBUTION_OS_PORT || 4191);
 const database = new DistributionDatabase();
@@ -24,6 +29,23 @@ const modelExecutor = new NativeModelExecutor(aiControlPlane);
 const runtimeExecutor = new AgentRuntimeExecutor(aiControlPlane);
 const githubConnector = new GitHubConnectorService(database);
 const devToConnector = new DevToConnector(database);
+const linkedInCredentialStore = new LinkedInCredentialStore();
+const linkedInConnector = new LinkedInConnector(database, fetch, linkedInCredentialStore);
+const connectionBroker = new OAuthConnectionBroker({
+  providers: [createLinkedInOAuthProvider()],
+  secretStore: (providerId) => {
+    if (providerId !== "linkedin") throw new Error("This credential store is not registered.");
+    return linkedInCredentialStore;
+  },
+  browserLauncher: new SystemBrowserLauncher(),
+  onConnected: (providerId, connection) => {
+    if (providerId === "linkedin") database.configureLinkedInIdentity(connection.accountId, connection.accountName, "keychain");
+  },
+  onDisconnected: (providerId) => {
+    if (providerId === "linkedin") database.disconnectLinkedIn();
+  },
+});
+const channelPublishers = new ChannelPublisherRegistry([devToConnector, linkedInConnector]);
 const actionFabric = new DistributionActionFabric(database);
 const actionConnections = new ActionConnectionService(database, actionFabric);
 const automationKernel = new AutomationKernel(database, {
@@ -164,6 +186,7 @@ const server = createServer(async (request, response) => {
       const devConnection = database.getDevToConnection();
       if (devConnection.productId && devConnection.signalQuery) await devToConnector.syncSignals(devConnection.productId);
       await devToConnector.syncOutcomes();
+      await linkedInConnector.syncOutcomes();
       json(response, 200, database.getDashboard());
       return;
     }
@@ -299,6 +322,37 @@ const server = createServer(async (request, response) => {
       json(response, 200, { synced, dashboard: database.getDashboard() });
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/connectors/linkedin/credential") {
+      const body = await readJson(request);
+      await linkedInConnector.saveAccessToken(String(body.accessToken || ""));
+      json(response, 200, database.getDashboard());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/connectors/linkedin/oauth/start") {
+      const body = await readJson(request);
+      const storedCredential = decodeOAuthCredential(await linkedInCredentialStore.read() || "");
+      const savedClientId = storedCredential?.clientId === "manual-token" ? "" : storedCredential?.clientId || "";
+      const clientId = String(body.clientId || process.env.LINKEDIN_CLIENT_ID || savedClientId);
+      const session = await connectionBroker.start("linkedin", clientId);
+      json(response, 201, { session });
+      return;
+    }
+    const linkedInOAuthSessionMatch = url.pathname.match(/^\/api\/connectors\/linkedin\/oauth\/sessions\/([^/]+)$/);
+    if (request.method === "GET" && linkedInOAuthSessionMatch) {
+      json(response, 200, { session: connectionBroker.getSession(decodeURIComponent(linkedInOAuthSessionMatch[1])), dashboard: database.getDashboard() });
+      return;
+    }
+    if (request.method === "DELETE" && url.pathname === "/api/connectors/linkedin/oauth") {
+      if (process.env.LINKEDIN_ACCESS_TOKEN?.trim()) throw new Error("LinkedIn is supplied by LINKEDIN_ACCESS_TOKEN. Remove it from the service environment, then restart Distribution OS.");
+      await connectionBroker.disconnect("linkedin");
+      json(response, 200, database.getDashboard());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/connectors/linkedin/outcomes/sync") {
+      const synced = await linkedInConnector.syncOutcomes();
+      json(response, 200, { synced, dashboard: database.getDashboard() });
+      return;
+    }
     const connectorSyncMatch = url.pathname.match(/^\/api\/connectors\/([^/]+)\/sync$/);
     if (request.method === "POST" && connectorSyncMatch) {
       const result = await githubConnector.sync(decodeURIComponent(connectorSyncMatch[1]));
@@ -427,7 +481,9 @@ const server = createServer(async (request, response) => {
     }
     const executeMatch = url.pathname.match(/^\/api\/opportunities\/([^/]+)\/execute$/);
     if (request.method === "POST" && executeMatch) {
-      const receipt = await devToConnector.executeApproved(decodeURIComponent(executeMatch[1]));
+      const opportunityId = decodeURIComponent(executeMatch[1]);
+      const channelId = database.getOpportunityDraftContext(opportunityId).opportunity.channelId;
+      const receipt = await channelPublishers.require(channelId).executeApproved(opportunityId);
       json(response, 201, { receipt, dashboard: database.getDashboard() });
       return;
     }
@@ -454,7 +510,7 @@ const server = createServer(async (request, response) => {
     const message = error instanceof Error ? error.message : "Unexpected server error";
     console.error("[distribution-os] request failed", { method: request.method, path: request.url, message });
     const missing = /not found$/i.test(message);
-    const invalid = error instanceof SyntaxError || /required|must|choose|supported|cannot|only|private-network|larger than|too many|could not be found/i.test(message);
+    const invalid = error instanceof SyntaxError || /required|must|choose|enter|supported|cannot|only|private-network|larger than|too many|could not be found/i.test(message);
     json(response, missing ? 404 : invalid ? 400 : 500, { error: message });
   }
 });
@@ -473,6 +529,7 @@ automationTimer.unref();
 
 function shutdown(): void {
   clearInterval(automationTimer);
+  connectionBroker.close();
   server.close(() => {
     database.close();
     process.exit(0);

@@ -1,6 +1,6 @@
 {
   "name": "@vraxis/distribution-os",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "A local-first distribution harness for technical products.",
   "files": [
@@ -55,6 +55,7 @@
     "@vraxis/agent-v": "^0.5.0",
     "ai": "^7.0.79",
     "mammoth": "^1.10.0",
+    "openid-client": "^6.8.7",
     "osx-components": "^0.8.0",
     "pdf-parse": "^1.1.1",
     "vue": "^3.5.21",

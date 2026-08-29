@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { activateAgentRuntime, activateModelProfile, approveActionExecution, captureProductSignals, connectDevTo, connectGitHubSource, createActionAdapter, createAutomationPlaybook, decideOpportunity, decideSignal, deleteAutomationPlaybook, deleteProduct, disconnectSourceConnector, discoverAIRuntimes, executeOpportunity, generateProductPlan, loadAIControlPlane, loadDashboard, onboardProduct, previewActionPolicy, probeActionAdapter, recordOpportunityOutcome, requestActionExecution, runAutomationPlaybook, saveDevToCredential, saveModelProfile, setActionAdapterEnabled, setAutomationPaused, syncSourceConnector, testAgentRuntime, testModelProfile, updateAutomationPlaybook, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
+import { activateAgentRuntime, activateModelProfile, approveActionExecution, captureProductSignals, connectDevTo, connectGitHubSource, createActionAdapter, createAutomationPlaybook, decideOpportunity, decideSignal, deleteAutomationPlaybook, deleteProduct, disconnectLinkedIn, disconnectSourceConnector, discoverAIRuntimes, executeOpportunity, generateProductPlan, getLinkedInOAuthSession, loadAIControlPlane, loadDashboard, onboardProduct, previewActionPolicy, probeActionAdapter, recordOpportunityOutcome, requestActionExecution, runAutomationPlaybook, saveDevToCredential, saveLinkedInCredential, saveModelProfile, setActionAdapterEnabled, setAutomationPaused, startLinkedInOAuth, syncSourceConnector, testAgentRuntime, testModelProfile, updateAutomationPlaybook, updateChannelPolicy, writeOpportunityDraft } from "./api.ts";
 import type { AgentRuntimeStatus, AIControlPlane, AutomationRun, Channel, ChannelMode, DashboardState, ModelProviderId, OnboardProductInput, OnboardingSourceInput, Opportunity } from "../server/domain.ts";
 import type { ActionAdapterDescriptor, ActionCapability, ActionExecutionRecord, ActionToolDescriptor, ActionTransport } from "../packages/action-fabric/src/index.ts";
 import ProductOnboarding from "./ProductOnboarding.vue";
@@ -47,6 +47,11 @@ const devToApiKey = ref("");
 const devToBusy = ref(false);
 const devToNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const devToForm = reactive({ productId: "", signalQuery: "", publishTags: "opensource, productivity" });
+const linkedInAccessToken = ref("");
+const linkedInClientId = ref("");
+const linkedInAuthorizationUrl = ref("");
+const linkedInBusy = ref(false);
+const linkedInNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const draftBusy = ref(false);
 const draftNotice = ref<{ tone: "success" | "warning" | "danger"; title: string; detail: string } | null>(null);
 const channelEditingId = ref("");
@@ -66,6 +71,7 @@ const actionInvocationOpen = ref(false);
 const actionInvocation = reactive({ adapterId: "", adapterName: "", toolName: "", capability: "read" as ActionCapability, purpose: "", evidenceRefs: "", argumentsJson: "{}" });
 let planAbortController: AbortController | null = null;
 let planTimer: number | null = null;
+let linkedInPollTimer: number | null = null;
 
 const activeProduct = computed(() => state.value?.products.find((item) => item.id === activeProductId.value) ?? null);
 const scopedProducts = computed(() => activeProduct.value ? [activeProduct.value] : state.value?.products ?? []);
@@ -91,6 +97,7 @@ const scopedConfidence = computed(() => scopedProducts.value.length ? Math.round
 const scopedPlaybooks = computed(() => state.value?.automation.playbooks.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
 const scopedAutomationRuns = computed(() => state.value?.automation.runs.filter((item) => !activeProductId.value || item.productId === activeProductId.value) ?? []);
 const devToChannel = computed(() => state.value?.channels.find((item) => item.id === "devto") ?? null);
+const linkedInChannel = computed(() => state.value?.channels.find((item) => item.id === "linkedin") ?? null);
 const activeRuntime = computed(() => ai.value?.runtimes.find((runtime) => runtime.id === ai.value?.execution.runtimeId) ?? null);
 const activeModelProfile = computed(() => ai.value?.profiles.find((profile) => profile.id === ai.value?.execution.modelProfileId) ?? null);
 const activeExecutionReady = computed(() => activeRuntime.value?.id === "native"
@@ -150,6 +157,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   planAbortController?.abort();
   if (planTimer !== null) window.clearInterval(planTimer);
+  if (linkedInPollTimer !== null) window.clearTimeout(linkedInPollTimer);
 });
 
 function selectProvider(providerId: ModelProviderId): void {
@@ -549,6 +557,85 @@ async function saveDevToKey(): Promise<void> {
   }
 }
 
+async function saveLinkedInToken(): Promise<void> {
+  linkedInNotice.value = null;
+  if (!linkedInAccessToken.value.trim()) return;
+  linkedInBusy.value = true;
+  try {
+    state.value = await saveLinkedInCredential(linkedInAccessToken.value);
+    linkedInAccessToken.value = "";
+    linkedInNotice.value = { tone: "success", title: "LinkedIn connected", detail: "The member identity was verified and the access token was saved to macOS Keychain, not SQLite." };
+  } catch (cause) {
+    linkedInNotice.value = { tone: "danger", title: "LinkedIn could not be connected", detail: cause instanceof Error ? cause.message : "LinkedIn did not verify this token." };
+  } finally {
+    linkedInBusy.value = false;
+  }
+}
+
+function updateLinkedInClientId(event: Event): void {
+  linkedInClientId.value = String((event.currentTarget as HTMLElement & { value?: string }).value || "");
+}
+
+function updateLinkedInAccessToken(event: Event): void {
+  linkedInAccessToken.value = String((event.currentTarget as HTMLElement & { value?: string }).value || "");
+}
+
+async function pollLinkedInConnection(sessionId: string): Promise<void> {
+  try {
+    const result = await getLinkedInOAuthSession(sessionId);
+    if (result.session.status === "connected") {
+      state.value = result.dashboard;
+      linkedInBusy.value = false;
+      linkedInAuthorizationUrl.value = "";
+      linkedInNotice.value = { tone: "success", title: "LinkedIn connected", detail: `Verified as ${result.session.connection?.accountName || "your LinkedIn member"}. The credential is stored in macOS Keychain.` };
+      return;
+    }
+    if (result.session.status === "failed" || result.session.status === "expired") {
+      linkedInBusy.value = false;
+      linkedInAuthorizationUrl.value = "";
+      linkedInNotice.value = { tone: "danger", title: "LinkedIn could not be connected", detail: result.session.error || "Start the connection again." };
+      return;
+    }
+    linkedInPollTimer = window.setTimeout(() => void pollLinkedInConnection(sessionId), 1_000);
+  } catch (cause) {
+    linkedInBusy.value = false;
+    linkedInAuthorizationUrl.value = "";
+    linkedInNotice.value = { tone: "danger", title: "Connection status was lost", detail: cause instanceof Error ? cause.message : "Start the connection again." };
+  }
+}
+
+async function connectLinkedInOAuth(): Promise<void> {
+  linkedInNotice.value = null;
+  linkedInAuthorizationUrl.value = "";
+  linkedInBusy.value = true;
+  try {
+    const result = await startLinkedInOAuth(linkedInClientId.value);
+    linkedInAuthorizationUrl.value = result.session.authorizationUrl;
+    linkedInNotice.value = {
+      tone: "warning",
+      title: result.session.browserOpened ? "Finish connecting in your browser" : "Open LinkedIn to continue",
+      detail: result.session.browserOpened ? "LinkedIn opened in your default browser. Distribution OS is waiting for your approval." : "Your browser did not open automatically. Use the secure LinkedIn link below.",
+    };
+    await pollLinkedInConnection(result.session.id);
+  } catch (cause) {
+    linkedInBusy.value = false;
+    linkedInNotice.value = { tone: "danger", title: "LinkedIn connection could not start", detail: cause instanceof Error ? cause.message : "Check the LinkedIn app setup and try again." };
+  }
+}
+
+async function removeLinkedInConnection(): Promise<void> {
+  linkedInNotice.value = null;
+  linkedInBusy.value = true;
+  try {
+    state.value = await disconnectLinkedIn();
+    linkedInNotice.value = { tone: "success", title: "LinkedIn disconnected", detail: "The local credential was removed. Publication receipts and measured outcomes were preserved." };
+  } catch (cause) {
+    linkedInNotice.value = { tone: "danger", title: "LinkedIn was not disconnected", detail: cause instanceof Error ? cause.message : "Try again." };
+  } finally {
+    linkedInBusy.value = false;
+  }
+}
+
 async function connectDevToSignals(): Promise<void> {
   devToNotice.value = null;
   if (!devToForm.productId || !devToForm.signalQuery.trim()) {
@@ -570,16 +657,16 @@ async function connectDevToSignals(): Promise<void> {
   }
 }
 
-async function publishToDev(opportunity: Opportunity): Promise<void> {
-  if (!window.confirm(`Publish the approved draft “${opportunity.title}” to DEV now? This is a real public action.`)) return;
+async function publishOpportunity(opportunity: Opportunity): Promise<void> {
+  if (!window.confirm(`Publish the approved draft “${opportunity.title}” to ${opportunity.channelName} now?\n\nThis exact draft will become a real public post under your connected identity.`)) return;
   actionBusy.value = true;
   campaignNotice.value = null;
   try {
     const result = await executeOpportunity(opportunity.id);
     state.value = result.dashboard;
-    campaignNotice.value = { tone: "success", title: "Published to DEV", detail: `Execution receipt captured: ${result.receipt.externalUrl}. Outcome refresh is now automatic when the workspace refreshes.` };
+    campaignNotice.value = { tone: "success", title: `Published to ${opportunity.channelName}`, detail: `Execution receipt captured: ${result.receipt.externalUrl}. Available outcomes refresh automatically with the workspace.` };
   } catch (cause) {
-    campaignNotice.value = { tone: "danger", title: "DEV publication failed", detail: cause instanceof Error ? cause.message : "DEV did not return a confirmed publication receipt." };
+    campaignNotice.value = { tone: "danger", title: `${opportunity.channelName} publication failed`, detail: cause instanceof Error ? cause.message : `${opportunity.channelName} did not return a confirmed publication receipt.` };
   } finally {
     actionBusy.value = false;
   }
@@ -985,10 +1072,23 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
           <osx-button :variant="state.automation.control.paused ? 'primary' : 'secondary'" :icon="state.automation.control.paused ? 'play' : 'pause'" :loading="automationBusyId === 'control'" @click="toggleAutomationControl">{{ state.automation.control.paused ? "Resume automation" : "Pause automation" }}</osx-button>
         </header>
 
-        <osx-alert v-if="automationNotice" :tone="automationNotice.tone" :title="automationNotice.title" dismissible @dismiss="automationNotice = null">{{ automationNotice.detail }}</osx-alert>
-        <osx-alert :tone="state.automation.control.paused ? 'warning' : 'info'" :title="state.automation.control.paused ? 'Automation is paused' : 'You approve every public action'">
-          {{ state.automation.control.paused ? "No scheduled source sync, plan, or draft will start until you resume automation." : "Automation can create private drafts and recommendations. It cannot publish on a schedule." }}
-        </osx-alert>
+        <osx-toast
+          v-if="automationNotice && automationNotice.tone !== 'danger'"
+          open
+          :tone="automationNotice.tone"
+          :title="automationNotice.title"
+          :message="automationNotice.detail"
+          placement="top-right"
+          :duration="5000"
+          dismissible
+          @dismiss="automationNotice = null"
+        ></osx-toast>
+        <div v-if="automationNotice?.tone === 'danger' || state.automation.control.paused" class="automation-alert-stack">
+          <osx-alert v-if="automationNotice?.tone === 'danger'" tone="danger" :title="automationNotice.title" dismissible @dismiss="automationNotice = null">{{ automationNotice.detail }}</osx-alert>
+          <osx-alert v-if="state.automation.control.paused" tone="warning" title="Automation is paused">
+            No scheduled source sync, plan, or draft will start until you resume automation.
+          </osx-alert>
+        </div>
 
         <section class="automation-metrics" aria-label="Automation status">
           <article><span>Active schedules</span><strong>{{ scopedPlaybooks.filter((item) => item.enabled).length }}</strong><small>{{ scopedPlaybooks.length }} configured</small></article>
@@ -1185,12 +1285,12 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
       </main>
 
       <main v-else-if="state && view === 'campaigns'" class="workspace-page">
-        <header><p class="eyebrow">APPROVED WORK</p><h1>Publish when you are ready.</h1><p>Copy drafts for manual channels. DEV can publish one approved draft after you confirm the exact action.</p></header>
+        <header><p class="eyebrow">APPROVED WORK</p><h1>Publish when you are ready.</h1><p>Copy drafts for manual channels. Connected DEV and LinkedIn accounts can publish one approved draft after you confirm the exact action.</p></header>
         <osx-alert v-if="campaignNotice" :tone="campaignNotice.tone" :title="campaignNotice.title" dismissible @dismiss="campaignNotice = null">{{ campaignNotice.detail }}</osx-alert>
         <section class="data-panel">
           <article v-for="opportunity in approved" :key="opportunity.id" class="campaign-artifact">
             <header class="campaign-row">
-              <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" icon="copy" @click="copyCampaignDraft(opportunity)">{{ copiedOpportunityId === opportunity.id ? "Copied" : "Copy draft" }}</osx-button><osx-button size="small" @click="decide('restore', opportunity)">Return to queue</osx-button><osx-button v-if="opportunity.channelId === 'devto'" size="small" variant="primary" icon="send" :disabled="!devToChannel?.connector.authenticated" :loading="actionBusy" @click="publishToDev(opportunity)">Publish to DEV</osx-button><osx-button v-else size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
+              <span class="status-orb"></span><div><strong>{{ opportunity.title }}</strong><small>{{ opportunity.productName }} · {{ opportunity.channelName }}</small></div><osx-badge tone="success">Approved</osx-badge><span class="campaign-actions"><osx-button size="small" icon="copy" @click="copyCampaignDraft(opportunity)">{{ copiedOpportunityId === opportunity.id ? "Copied" : "Copy draft" }}</osx-button><osx-button size="small" @click="decide('restore', opportunity)">Return to queue</osx-button><osx-button v-if="opportunity.channelId === 'devto' || opportunity.channelId === 'linkedin'" size="small" variant="primary" icon="send" :disabled="!state.channels.find((channel) => channel.id === opportunity.channelId)?.connector.authenticated || !state.channels.find((channel) => channel.id === opportunity.channelId)?.connector.configured" :loading="actionBusy" @click="publishOpportunity(opportunity)">Publish to {{ opportunity.channelName }}</osx-button><osx-button v-else size="small" variant="primary" icon="activity" @click="outcomeOpportunityId = opportunity.id">Record outcome</osx-button></span>
             </header>
             <pre class="campaign-draft">{{ opportunity.draftCopy }}</pre>
           </article>
@@ -1221,7 +1321,7 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             <form v-if="channelEditingId === channel.id" class="channel-policy-form" @submit.prevent="saveChannel(channel)">
               <label>Review mode<select v-model="channelForm.mode"><option value="draft">Draft only</option><option value="approval">Human approval</option></select></label>
               <label>Daily limit<input v-model.number="channelForm.dailyLimit" type="number" min="0" max="100" step="1" /></label>
-              <small>{{ channel.id === 'devto' ? 'DEV publishes only one approved draft after you confirm it.' : 'These settings affect plans and review. Distribution OS does not publish to this channel.' }}</small>
+              <small>{{ channel.id === 'devto' || channel.id === 'linkedin' ? `${channel.name} publishes only one approved draft after you confirm it.` : 'These settings affect plans and review. Distribution OS does not publish to this channel.' }}</small>
               <footer><osx-button size="small" @click="channelEditingId = ''">Cancel</osx-button><osx-button type="button" size="small" variant="primary" icon="check" :loading="actionBusy" @click="saveChannel(channel)">Save settings</osx-button></footer>
             </form>
             <footer v-else><osx-toggle :checked="channel.connected" disabled>{{ channel.connected ? 'Connection enabled' : 'Not connected' }}</osx-toggle><osx-button size="small" icon="settings" @click="editChannel(channel)">Edit settings</osx-button></footer>
@@ -1243,6 +1343,30 @@ const navItems: Array<{ id: View; label: string; icon: string; section?: string 
             <footer><span>The search applies only to this project. Distribution OS never stores the API key in SQLite.</span><osx-button type="button" variant="primary" icon="refresh" :loading="devToBusy" :disabled="!devToForm.productId || !devToForm.signalQuery.trim()" @click="connectDevToSignals">Connect and sync</osx-button></footer>
           </form>
           <osx-alert v-if="devToNotice" :tone="devToNotice.tone" :title="devToNotice.title" dismissible @dismiss="devToNotice = null">{{ devToNotice.detail }}</osx-alert>
+        </section>
+        <section class="devto-connector-panel linkedin-connector-panel">
+          <div class="section-heading"><div><p class="eyebrow">LINKEDIN</p><h2>LinkedIn publishing</h2><p>Publish approved founder posts and capture a receipt for every action.</p></div><osx-badge :tone="linkedInChannel?.connector.configured ? 'success' : 'warning'" dot>{{ linkedInChannel?.connector.accountName ? `Connected as ${linkedInChannel.connector.accountName}` : linkedInChannel?.connector.authenticated ? 'Credential ready' : 'Not connected' }}</osx-badge></div>
+          <div class="oauth-connection-panel">
+            <span class="oauth-connection-mark"><osx-icon name="user" :size="19"></osx-icon></span>
+            <div class="oauth-connection-content">
+              <div class="oauth-connection-copy"><strong>Connect your LinkedIn account</strong><p>Sign in on LinkedIn and approve the requested access. Distribution OS verifies the account before publishing is enabled.</p></div>
+              <div v-if="!linkedInChannel?.connector.authenticated" class="oauth-connect-form">
+                <osx-text-field :value="linkedInClientId" label="LinkedIn app client ID" placeholder="Uses local configuration when blank" hint="This is the public app identifier. Never enter a client secret." @input="updateLinkedInClientId"></osx-text-field>
+                <osx-button variant="primary" icon="external" :loading="linkedInBusy" @click="connectLinkedInOAuth">Connect LinkedIn</osx-button>
+              </div>
+              <div v-else class="oauth-actions">
+                <osx-button icon="refresh" :loading="linkedInBusy" @click="connectLinkedInOAuth">Reconnect</osx-button>
+                <osx-button variant="danger" icon="close" :loading="linkedInBusy" @click="removeLinkedInConnection">Disconnect</osx-button>
+              </div>
+            </div>
+          </div>
+          <osx-alert v-if="linkedInAuthorizationUrl" tone="info" title="LinkedIn authorization is waiting"><osx-link :href="linkedInAuthorizationUrl" external>Open LinkedIn in your browser</osx-link></osx-alert>
+          <details class="advanced-credential-panel">
+            <summary>Use an access token instead</summary>
+            <p>Use this fallback only when your LinkedIn app cannot use the native PKCE flow. The token still needs <code>openid</code>, <code>profile</code>, and <code>w_member_social</code>.</p>
+            <div><osx-text-field :value="linkedInAccessToken" type="password" label="LinkedIn access token" placeholder="Paste member access token" @input="updateLinkedInAccessToken"></osx-text-field><osx-button icon="lock" :loading="linkedInBusy" :disabled="!linkedInAccessToken.trim()" @click="saveLinkedInToken">Verify & save securely</osx-button></div>
+          </details>
+          <osx-alert v-if="linkedInNotice" :tone="linkedInNotice.tone" :title="linkedInNotice.title" dismissible @dismiss="linkedInNotice = null">{{ linkedInNotice.detail }}</osx-alert>
         </section>
         <osx-alert v-if="channelNotice" :tone="channelNotice.tone" :title="channelNotice.title" dismissible @dismiss="channelNotice = null">{{ channelNotice.detail }}</osx-alert>
       </main>

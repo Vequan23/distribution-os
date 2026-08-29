@@ -2,10 +2,37 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { DistributionDatabase } from "../server/database.ts";
 import { scoreOpportunity } from "../server/domain.ts";
 import { GitHubConnectorService, parseGitHubRepository } from "../server/github-connector.ts";
+
+test("channel catalog restores supported channels and hides obsolete placeholders", () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-channels-"));
+  const initialDatabase = new DistributionDatabase(directory);
+  const databasePath = initialDatabase.databasePath;
+  initialDatabase.close();
+
+  const rawDatabase = new DatabaseSync(databasePath);
+  rawDatabase.exec("PRAGMA foreign_keys = ON;");
+  rawDatabase.prepare(`
+    INSERT INTO channels (id, name, handle, mode, status, daily_limit, connected, created_at)
+    VALUES ('legacy-placeholder', 'Legacy placeholder', 'Not connected', 'approval', 'planned', 1, 0, ?)
+  `).run(new Date().toISOString());
+  rawDatabase.close();
+
+  const reconciledDatabase = new DistributionDatabase(directory);
+  try {
+    assert.deepEqual(
+      reconciledDatabase.getDashboard().channels.map((channel) => channel.id).sort(),
+      ["devto", "linkedin"],
+    );
+  } finally {
+    reconciledDatabase.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("opportunity scoring rewards relevance and usefulness while penalizing promotion risk", () => {
   const strong = scoreOpportunity({ relevance: 96, value: 94, freshness: 88, promotionRisk: 8 });

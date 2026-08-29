@@ -12,5 +12,5 @@
     "rewriteRelativeImportExtensions": true,
     "sourceMap": true
   },
-  "include": ["server/**/*.ts", "packages/action-fabric/src/**/*.ts"]
+  "include": ["server/**/*.ts", "packages/action-fabric/src/**/*.ts", "packages/connection-broker/src/**/*.ts"]
 }

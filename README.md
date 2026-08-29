@@ -47,7 +47,7 @@ Every proposed move must answer four questions:
 - Separate evidence classes for founder intent, public claims, implementation, audience observations, and outcomes
 - A quarantined Signal Inbox where observations must be accepted before they become citable audience evidence
 - A read-only GitHub Issues connector with manual sync, pull-request filtering, deduplication, and the same human evidence gate
-- A narrow DEV connector that quarantines public article observations, publishes only a separately approved contribution, records a receipt, and refreshes views, reactions, and comments
+- Narrow DEV and LinkedIn connectors that publish only separately approved contributions, record receipts, and refresh the outcomes their APIs permit
 - Multi-provider model profiles with environment-variable or macOS Keychain credentials
 - Vraxis-backed native agents with host-enforced evidence-reading sequences and redacted tool-call audit evidence
 - Vraxis-backed schema execution for cited onboarding and bounded plan/draft repair, with project-scoped execution and adapter provenance
@@ -88,7 +88,7 @@ The command starts the local service and opens Distribution OS in your default b
 7. An automation cycle may refresh read-only connectors, generate a small evidence-cited plan, and prepare founder-editable drafts. It always stops at the review queue.
 8. Inspect the evidence and use **Write channel draft** when you want to rewrite a selected opportunity manually.
 9. Edit the draft, then approve or skip the move.
-10. Complete the approved work through a manual handoff or, for a verified Action Fabric connection, approve one exact sanitized request for execution.
+10. Complete the approved work through the DEV or LinkedIn connector, a manual handoff, or a verified Action Fabric connection. Every identity-bearing action requires confirmation of the exact payload.
 11. Record the observed outcome in Campaigns. The next manual or scheduled cycle receives the accumulated decision and outcome memory.
 
 Use the persistent **Project** switcher in the toolbar to keep one project's recommendations, signals, campaigns, journal, and run evidence in context. Choose **All Projects** for the portfolio view, then open **Projects** to see every onboarded project.
@@ -96,6 +96,8 @@ Use the persistent **Project** switcher in the toolbar to keep one project's rec
 Project and loop deletion use deliberately different semantics. **Delete loop** removes the active schedule while retaining its completed run, decision, and outcome history. **Delete project** requires typing `DELETE` and permanently cascades through that project's evidence, signals, opportunities, outcomes, connectors, automation configuration and runs, harness runs, project-linked action records, and ledger events. An active automation run must finish before either deletion can proceed.
 
 DEV public signal discovery does not require a credential. For founder-approved publishing and authenticated outcome capture, create a key in [DEV Settings → Extensions](https://dev.to/settings/extensions), then use **Channels → DEV → Verify & save securely**. The key is verified before macOS Keychain storage and never enters SQLite. `DEVTO_API_KEY` remains available as a local environment-variable alternative.
+
+LinkedIn founder-approved text publishing uses **Channels → LinkedIn → Connect LinkedIn**. Distribution OS starts a single-use Authorization Code + PKCE session, opens the operating system's default browser, receives LinkedIn's redirect on a random `127.0.0.1` port, verifies the member identity, and stores the resulting credential in macOS Keychain. Set `LINKEDIN_CLIENT_ID` or enter the public client ID in the connection form; never provide the client secret. The LinkedIn developer app must have its native PKCE flow enabled plus Sign in with LinkedIn and Share on LinkedIn access. A manually created `LINKEDIN_ACCESS_TOKEN` remains an advanced local fallback. Reactions and comments are refreshed only when LinkedIn grants the app the necessary Community Management API access. A denied metric read is recorded as a visible sync failure and never changes the confirmed publication receipt.
 
 > **Note:** Refreshing the workspace reloads local dashboard state. It does not silently re-fetch URLs, repositories, or external audience sources.
 
@@ -189,7 +191,7 @@ Distribution-OS currently creates evidence-grounded plans and drafts, stores fou
 
 It does **not** yet provide:
 
-- Authenticated publishing beyond the narrow approval-gated DEV connector
+- Authenticated publishing beyond the narrow approval-gated DEV and LinkedIn connectors
 - Autonomous posting or outreach
 - Broad continuous audience monitoring or representative trend detection beyond configured read-only GitHub issue sources
 - Automatic product analytics or revenue attribution
@@ -238,6 +240,6 @@ CI runs `npm run check` on Node.js 24 for every push and pull request.
 
 ## Status
 
-Distribution-OS is in active alpha. The governed evidence-to-outcome loop, local Automation Kernel, and host-controlled Action Fabric connection lifecycle are usable today. Provider-specific OAuth onboarding, broader monitoring, and team collaboration remain roadmap work; an authenticated MCP endpoint can already be connected through a runtime environment credential.
+Distribution-OS is in active alpha. The governed evidence-to-outcome loop, local Automation Kernel, LinkedIn OAuth onboarding, and host-controlled Action Fabric connection lifecycle are usable today. Broader monitoring and team collaboration remain roadmap work; an authenticated MCP endpoint can already be connected through a runtime environment credential.
 
 If this problem resonates, open an issue with the distribution workflow you wish existed. Concrete founder workflows are more valuable than generic feature requests.

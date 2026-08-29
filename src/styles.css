@@ -18,7 +18,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-stage { min-height: 100vh; padding: 18px; }
 .app-stage > osx-app-shell { height: calc(100vh - 36px); min-height: 720px; }
 .toolbar-actions { min-width: 0; display: flex; gap: 9px; align-items: center; }
-.project-switcher { display: inline-flex; align-items: center; gap: 7px; color: #82959e; font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.project-switcher { display: inline-flex; align-items: center; gap: 7px; color: #82959e; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .project-switcher > span { white-space: nowrap; }
 .project-switcher select { min-width: 150px; max-width: 220px; height: 30px; padding: 4px 28px 4px 9px; border: 1px solid #3b515b; border-radius: 6px; color: #dce8ed; background: #101a1f; font: 600 12px system-ui, sans-serif; text-transform: none; }
 .engine-chip { min-width: 0; max-width: 340px; min-height: 28px; display: flex; gap: 6px; align-items: center; padding: 4px 9px; border: 1px solid #3c697c; border-radius: 14px; color: #bfe9fa; background: rgba(14,43,55,.7); cursor: pointer; }
@@ -267,6 +267,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .devto-credential-panel label, .devto-form label { display: grid; gap: 7px; color: #c8d7de; font-size: 12px; font-weight: 700; }
 .devto-credential-panel input, .devto-form input, .devto-form select { width: 100%; min-height: 40px; padding: 9px 11px; border: 1px solid #455c66; border-radius: 7px; outline: 0; color: #e1ebef; background: #0b1419; }
 .devto-credential-panel input:focus, .devto-form input:focus, .devto-form select:focus { border-color: #42a8d3; box-shadow: 0 0 0 3px rgba(49,151,194,.18); }
+.linkedin-connector-panel { display: grid; gap: 16px; }
+.oauth-connection-panel { width: min(100%,900px); display: grid; grid-template-columns: 42px minmax(0,1fr); gap: 14px; align-items: start; padding: 16px; border: 1px solid var(--osx-border-soft); border-radius: 9px; background: var(--osx-surface); }
+.oauth-connection-content { min-width: 0; display: grid; gap: 14px; }.oauth-connection-copy strong { color: var(--osx-text); font-size: 15px; }.oauth-connection-copy p { max-width: 680px; margin: 5px 0 0; color: var(--osx-muted); font-size: 12px; line-height: 1.55; }.oauth-connection-mark { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid var(--osx-border); border-radius: 9px; color: var(--osx-accent-light); background: var(--osx-surface-raised); }
+.oauth-connect-form { max-width: 680px; display: grid; grid-template-columns: 1fr; gap: 10px; }.oauth-connect-form > osx-button { justify-self: start; }.oauth-actions { display: flex; gap: 8px; align-items: center; }
+.advanced-credential-panel { width: min(100%,900px); padding: 0 72px; color: var(--osx-muted); font-size: 12px; }.advanced-credential-panel summary { width: fit-content; cursor: pointer; color: var(--osx-muted); font-weight: 700; }.advanced-credential-panel[open] { padding-top: 12px; padding-bottom: 14px; border: 1px solid var(--osx-border-soft); border-radius: 8px; background: var(--osx-surface); }.advanced-credential-panel[open] summary { color: var(--osx-text); }.advanced-credential-panel p { line-height: 1.5; }.advanced-credential-panel > div { display: grid; grid-template-columns: minmax(240px,1fr) auto; gap: 12px; align-items: end; }
 .devto-form { display: grid; grid-template-columns: minmax(180px,.55fr) minmax(250px,1fr) minmax(180px,.55fr); gap: 12px; align-items: end; padding: 15px; border: 1px solid #344b55; border-radius: 9px; background: #101b20; }
 .devto-form > strong, .devto-form footer { grid-column: 1 / -1; }
 .devto-form footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; color: #80949e; font-size: 12px; }
@@ -291,6 +296,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .settings-grid { display: grid; gap: 10px; }.settings-grid article { display: grid; grid-template-columns: 32px minmax(0,1fr) auto; gap: 12px; align-items: start; padding: 16px; }.settings-grid article > osx-icon { color: #60b9df; }.settings-grid h2 { margin: 0 0 4px; }
 
 .automation-page { padding-bottom: 64px; }
+.automation-alert-stack { display: grid; gap: 10px; }
 .automation-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin: 14px 0; }
 .automation-metrics article { display: grid; gap: 4px; min-width: 0; padding: 14px; border: 1px solid #354a53; border-radius: 9px; background: linear-gradient(145deg,#1b2a31,#101a1f); }
 .automation-metrics span { color: #78909a; font-size: 12px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
@@ -364,7 +370,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .runtime-card h3 { margin: 0; color: #dfeaf0; font-size: 14px; }
 .runtime-card header small { overflow: hidden; color: #718791; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-card > p { min-height: 38px; display: grid; gap: 5px; margin: 0; color: #8fa2ab; font-size: 12px; line-height: 1.55; }
-.runtime-card > p small { color: #6f858f; font-size: 11px; }
+.runtime-card > p small { color: #6f858f; font-size: 12px; }
 .runtime-card ul { display: flex; flex-wrap: wrap; gap: 6px 11px; margin: 0; padding: 0; color: #9babb3; list-style: none; }
 .runtime-card li { display: flex; gap: 5px; align-items: center; font-size: 12px; }
 .runtime-card li osx-icon { color: #53b873; }
@@ -416,6 +422,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 @media (max-width: 1180px) {
   .devto-credential-panel { grid-template-columns: 1fr auto; }
+  .oauth-connection-panel { width: min(100%,820px); }
   .devto-credential-panel > div { grid-column: 1 / -1; }
   .metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .audience-grid { grid-template-columns: 1fr; }
@@ -450,6 +457,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .command-hero { grid-template-columns: 1fr; }
   .system-score { justify-items: start; border-left: 0; border-top: 1px solid #3a4b54; padding: 12px 0 0; }
   .product-grid, .channel-grid { grid-template-columns: 1fr; }
+  .oauth-connect-form { grid-template-columns: 1fr; }.oauth-connect-form > osx-button { justify-self: start; }
   .ownership-grid { grid-template-columns: 1fr; }
   .playbook-grid { grid-template-columns: 1fr; }
   .automation-form footer { align-items: stretch; flex-direction: column; }
@@ -466,6 +474,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .project-switcher { margin-right: auto; }
   .project-switcher select { min-width: 128px; max-width: 160px; }
   .devto-credential-panel { grid-template-columns: 1fr; }
+  .oauth-connection-panel { grid-template-columns: 1fr; }.oauth-connection-mark { width: 36px; height: 36px; }.advanced-credential-panel { padding-right: 0; padding-left: 0; }.advanced-credential-panel[open] { padding-right: 12px; padding-left: 12px; }.advanced-credential-panel > div { grid-template-columns: 1fr; }.oauth-connect-form > osx-button { width: 100%; }.oauth-actions { align-items: stretch; flex-direction: column; }
   .devto-credential-panel > div { grid-column: auto; }
   .metric-grid { grid-template-columns: 1fr 1fr; }
   .opportunity-card { grid-template-columns: 28px minmax(0,1fr); padding: 12px; }

@@ -112,13 +112,14 @@ export interface Channel {
   dailyLimit: number;
   connected: boolean;
   connector: {
-    kind: "devto" | "none";
+    kind: "devto" | "linkedin" | "none";
     configured: boolean;
     authenticated: boolean;
     credentialSource: "environment" | "keychain" | "none";
     productId: string;
     signalQuery: string;
     publishTags: string[];
+    accountName: string;
     lastSignalSyncAt: string;
     lastOutcomeSyncAt: string;
     detail: string;

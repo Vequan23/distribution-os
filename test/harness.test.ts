@@ -13,6 +13,8 @@ import { synthesizeProductBrief } from "../server/onboarding-harness.ts";
 import { AgentRuntimeExecutor, runRuntimeCommand } from "../server/runtime-executor.ts";
 import { AutomationKernel } from "../server/automation-kernel.ts";
 import { DevToConnector } from "../server/devto-connector.ts";
+import { LinkedInConnector } from "../server/linkedin-connector.ts";
+import { ChannelPublisherRegistry } from "../server/channel-publisher.ts";
 
 function seedProduct(database: DistributionDatabase): string {
   return database.onboardProduct({
@@ -570,4 +572,81 @@ test("DEV First Win Loop quarantines signals, publishes only an approved edit, a
     database.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("LinkedIn First Win Loop verifies identity, requires approval, captures a receipt, and learns from outcomes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-linkedin-"));
+  const database = new DistributionDatabase(directory);
+  const previousToken = process.env.LINKEDIN_ACCESS_TOKEN;
+  delete process.env.LINKEDIN_ACCESS_TOKEN;
+  let storedToken: string | null = null;
+  let publishedPayload: Record<string, unknown> | null = null;
+  let metricReadsAllowed = false;
+  const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    if (url.endsWith("/v2/userinfo")) return Response.json({ sub: "member-42", name: "Technical Founder" });
+    if (url.endsWith("/rest/posts") && init?.method === "POST") {
+      publishedPayload = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return new Response("", { status: 201, headers: { "x-restli-id": "urn:li:share:987" } });
+    }
+    if (url.includes("/rest/socialActions/")) {
+      if (!metricReadsAllowed) return Response.json({ message: "Missing Community Management access" }, { status: 403 });
+      return Response.json({ likesSummary: { totalLikes: 9 }, commentsSummary: { aggregatedTotalComments: 4 } });
+    }
+    throw new Error(`Unexpected LinkedIn request: ${url}`);
+  };
+  const connector = new LinkedInConnector(database, fetcher as typeof fetch, {
+    read: async () => storedToken,
+    write: async (secret) => { storedToken = secret; },
+  });
+  try {
+    const productId = seedProduct(database);
+    await connector.saveAccessToken("linkedin-test-access-token-1234567890");
+    assert.equal(storedToken, "linkedin-test-access-token-1234567890");
+    assert.equal(database.getDashboard().channels.find((item) => item.id === "linkedin")?.connector.accountName, "Technical Founder");
+
+    const runId = database.beginHarnessRun({ kind: "distribution-plan", productId, runtimeId: "native" });
+    const application = database.applyDistributionPlan({
+      runId, productId, summary: "One cited LinkedIn contribution.", assumptions: [], mode: "ai", warning: "",
+      moves: [{
+        channelId: "linkedin", type: "owned-post", title: "Share one evidence-first lesson",
+        whyNow: "The founder brief provides a specific claim to test.", suggestedAngle: "Share the method and invite a substantive reply.",
+        draftCopy: "Start with evidence. Make one useful contribution. Measure whether it starts the right conversation.",
+        citationLabels: ["Founder brief"], relevanceScore: 94, valueScore: 91, freshnessScore: 85, promotionRisk: 6,
+      }],
+    });
+    const opportunityId = application.opportunityIds[0];
+    assert.ok(opportunityId);
+    await assert.rejects(() => connector.executeApproved(opportunityId), /Approve/);
+
+    const founderEdit = "Start with one real observation. Make one useful contribution, then learn from the replies.";
+    database.decideOpportunity(opportunityId, "approve", founderEdit);
+    const receipt = await connector.executeApproved(opportunityId);
+    assert.equal(receipt.externalId, "urn:li:share:987");
+    assert.equal(publishedPayload?.author, "urn:li:person:member-42");
+    assert.equal(publishedPayload?.commentary, founderEdit);
+    assert.equal(database.getDashboard().opportunities.find((item) => item.id === opportunityId)?.execution?.status, "published");
+    assert.equal(database.getDashboard().opportunities.find((item) => item.id === opportunityId)?.outcomes.length, 0, "a denied metric read must not invalidate or invent outcomes");
+    await assert.rejects(() => connector.executeApproved(opportunityId), /Approve|receipt/);
+
+    metricReadsAllowed = true;
+    assert.equal(await connector.syncOutcomes(), 1);
+    const measured = database.getDashboard().opportunities.find((item) => item.id === opportunityId);
+    assert.equal(measured?.outcomes.find((item) => item.metric === "reactions")?.value, 9);
+    assert.equal(measured?.outcomes.find((item) => item.metric === "comments")?.value, 4);
+    assert.equal(database.getOutcomeMemory(productId).find((item) => item.metric === "comments")?.total, 4);
+  } finally {
+    if (previousToken === undefined) delete process.env.LINKEDIN_ACCESS_TOKEN;
+    else process.env.LINKEDIN_ACCESS_TOKEN = previousToken;
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("channel publisher registry fails closed for unsupported and duplicate publishers", () => {
+  const publisher = { channelId: "linkedin", executeApproved: async () => ({ externalId: "1", externalUrl: "https://example.test/1" }), syncOutcomes: async () => 0 };
+  const registry = new ChannelPublisherRegistry([publisher]);
+  assert.equal(registry.require("linkedin"), publisher);
+  assert.throws(() => registry.require("unsupported"), /does not have a verified publishing connector/i);
+  assert.throws(() => new ChannelPublisherRegistry([publisher, publisher]), /Duplicate channel publisher/);
 });

@@ -11,8 +11,8 @@ Distribution-OS treats distribution as a governed evidence-to-outcome loop, not 
 5. **Verify** rejects moves without exact evidence-label citations and validates all output through Zod schemas.
 6. **Write** runs a separate native contribution loop that must read the selected opportunity and its supporting evidence before updating the editable channel draft.
 7. **Approve** gives the founder an explicit approve/skip decision. No public side effect exists in this stage.
-8. **Execute** permits one approved DEV contribution to cross the public boundary only through a separate founder confirmation, daily channel policy, verified credential, and durable receipt. Other channels remain manual handoffs or Action Fabric connections.
-9. **Learn** records manual outcomes or refreshes DEV views, reactions, and comments as connector snapshots, then exposes the latest observations to the next agent run.
+8. **Execute** routes an approved contribution through a channel publisher registry. DEV and LinkedIn may cross the public boundary only through a separate founder confirmation, daily channel policy, verified credential, duplicate guard, and durable receipt. Other channels remain manual handoffs or Action Fabric connections.
+9. **Learn** records manual outcomes or refreshes the metrics permitted by DEV and LinkedIn as connector snapshots, then exposes the latest observations to the next agent run. A metric permission failure is recorded without invalidating a confirmed publication receipt.
 
 ## Automation Kernel
 
@@ -90,6 +90,10 @@ SQLite records harness and automation runs, step names/statuses, triggers, selec
 
 ## Connector boundary
 
+Reusable authorization mechanics live in `packages/connection-broker`. The package owns provider manifests, Authorization Code + PKCE sessions, state validation, random-port loopback callbacks, default-browser launch, opaque credential serialization, refresh-token rotation, secure-store adapters, verified connection identity, and disconnect lifecycle. It does not know about products, drafts, evidence, approval, publishing, or Vue. Distribution OS supplies the LinkedIn provider definition and maps a verified member into channel state, so the directory can later be extracted into a Vraxis package without moving distribution policy with it.
+
+LinkedIn connection is a public-client flow: no client secret enters the browser, local service, database, or Keychain. Each authorization attempt receives a new state value and PKCE verifier, expires after five minutes, accepts one matching callback on `127.0.0.1`, and never returns a token through the Distribution OS API. The resulting access and optional refresh credential are stored as an opaque versioned Keychain value. The previous manually pasted token path remains an explicit advanced fallback.
+
 The connector boundary is deliberately narrow. GitHub repository metadata and recent issues are read from fixed `api.github.com` endpoints only. DEV public article search imports at most eight bounded candidates per sync. Both enter the Signal Inbox and cannot influence a plan until the founder accepts them as audience evidence.
 
-DEV is the only built-in direct publishing connector. Public search needs no credential; publishing and authenticated outcome capture require a key verified against DEV and read from macOS Keychain or `DEVTO_API_KEY`. Approval and execution are separate actions, the channel daily limit is enforced immediately before transport, a missing receipt is failure, and scheduled Automation Kernel runs cannot publish.
+DEV and LinkedIn are the built-in direct publishing connectors. Public DEV search needs no credential; publishing and authenticated outcome capture require a key verified against DEV and read from macOS Keychain or `DEVTO_API_KEY`. LinkedIn uses the connection broker's PKCE flow, verifies the member through OpenID user info, and stores the OAuth credential in Keychain; `LINKEDIN_ACCESS_TOKEN` remains an environment fallback. Publishing uses the versioned Posts API and engagement refresh uses Social Actions only when the app has access. Both connectors keep approval and execution separate, enforce the channel daily limit immediately before transport, require a platform receipt, prevent duplicate execution, and remain unavailable to scheduled Automation Kernel runs.
