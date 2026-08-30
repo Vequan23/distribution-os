@@ -15,7 +15,7 @@ const systemLayers = [
 
 const ecosystem = [
   { mark: "A", name: "Aperta", label: "Code comprehension", copy: "Turn AI-generated code into evidence-backed understanding and durable ownership.", href: "https://aperta-six.vercel.app/", action: "Explore Aperta", tone: "info", trackingId: "distribution-site-aperta" },
-  { mark: "O", name: "OSX Components", label: "Interface system", copy: "Accessible Vue-authored web components for product interfaces with classic OS X clarity.", href: "https://osx-components.vercel.app/", action: "Browse components", tone: "warning", trackingId: "distribution-site-osx-components" },
+  { mark: "O", name: "osx Components", label: "Interface system", copy: "Accessible Vue-authored web components for product interfaces with classic OS X clarity.", href: "https://osx-components.vercel.app/", action: "Browse components", tone: "warning", trackingId: "distribution-site-osx-components" },
   { mark: "V", name: "VQ Clark", label: "Builder notes", copy: "Engineering, architecture, product systems, and the thinking behind this ecosystem.", href: "https://vqclark.vercel.app/", action: "Read the journal", tone: "neutral", trackingId: "distribution-site-vqclark" },
 ];
 
@@ -155,7 +155,7 @@ function openSource(): void {
       <section id="ecosystem" class="ecosystem-section section-shell">
         <header class="ecosystem-heading">
           <div>
-            <span class="osx-provenance"><span class="provenance-mark">O</span>Interface built with <strong>OSX Components</strong></span>
+            <span class="osx-provenance"><span class="provenance-mark">O</span>Interface built with <strong>osx Components</strong></span>
             <osx-heading :level="2" variant="title">Tools that keep you in control.</osx-heading>
           </div>
           <osx-copy tone="muted" measure="default">Distribution OS works alongside independent tools for understanding code, building interfaces, and sharing what you learn.</osx-copy>
@@ -191,7 +191,7 @@ function openSource(): void {
 
     <footer class="site-footer">
       <span><strong>Distribution OS</strong> · Open-source distribution for technical founders</span>
-      <span>Built with <a href="https://osx-components.vercel.app/" target="_blank" rel="noreferrer">OSX Components</a></span>
+      <span>Built with <a href="https://osx-components.vercel.app/" target="_blank" rel="noreferrer">osx Components</a></span>
     </footer>
   </div>
 </template>
