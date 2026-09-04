@@ -66,15 +66,17 @@ export class DevToConnector {
 
   async connectAndSync(productId: string, signalQuery: string, publishTags: string[]): Promise<{ imported: number }> {
     this.database.configureDevToConnection(productId, signalQuery, publishTags);
-    return { imported: await this.syncSignals(productId) };
+    const result = await this.syncSignals(productId);
+    return { imported: result.importedCount };
   }
 
-  async syncSignals(productId: string): Promise<number> {
-    const { signalQuery } = this.database.getDevToConnection();
-    if (!signalQuery) return 0;
+  async syncSignals(productId: string): Promise<{ importedCount: number; inspectedCount: number }> {
+    const { signalQuery, productId: configuredProductId } = this.database.getDevToConnection();
+    if (!signalQuery || configuredProductId !== productId) return { importedCount: 0, inspectedCount: 0 };
     const query = new URLSearchParams({ q: signalQuery, top: "30", per_page: "8" });
     const articles = await devJson<DevArticle[]>(this.fetcher, `/articles/search?${query.toString()}`);
-    return this.database.importDevToSignals(productId, articles.map((article) => ({
+    const inspectedCount = articles.length;
+    const importedCount = this.database.importDevToSignals(productId, articles.map((article) => ({
       id: article.id,
       title: article.title,
       description: article.description || article.title,
@@ -83,6 +85,7 @@ export class DevToConnector {
       reactions: article.public_reactions_count ?? article.positive_reactions_count ?? 0,
       comments: article.comments_count ?? 0,
     })));
+    return { importedCount, inspectedCount };
   }
 
   async executeApproved(opportunityId: string): Promise<{ externalId: string; externalUrl: string }> {

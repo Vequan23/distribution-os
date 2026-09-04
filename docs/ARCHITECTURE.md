@@ -45,7 +45,7 @@ Every adapter declares:
 
 The host policy always wins. It rejects unknown adapters, undeclared capabilities, missing purpose or idempotency keys, invalid/exhausted budgets, and preparation/execution without evidence. Identity-bearing and irreversible actions are upgraded to approval on every invocation even if an adapter claims otherwise. Idempotency keys are bound to the exact adapter, tool, capability, purpose, evidence, sanitized arguments, and dry-run mode; a collision with different input is rejected.
 
-Distribution-OS currently supplies three core adapters: read-only GitHub observation, private AI preparation, and founder-owned public handoff. User manifests can also be registered for MCP, the bounded GitHub CLI reader, an MCP-compatible managed gateway such as Composio, or a manual handoff. Registration stores no token and grants no execution rights; external transports start in `setup-required`.
+Distribution-OS currently supplies four core adapters: read-only GitHub observation, read-only DEV observation, private AI preparation, and founder-owned public handoff. User manifests can also be registered for MCP, the bounded GitHub CLI reader, an MCP-compatible managed gateway such as Composio, or a manual handoff. Registration stores no token and grants no execution rights; external transports start in `setup-required`.
 
 The connection lifecycle is explicit:
 
