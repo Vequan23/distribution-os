@@ -6,6 +6,7 @@ import type { DistributionActionFabric } from "./action-fabric.ts";
 
 interface AutomationDependencies {
   syncConnector: (id: string) => Promise<{ importedCount: number; inspectedCount: number }>;
+  syncDevToObserver?: (productId: string) => Promise<{ importedCount: number; inspectedCount: number }>;
   generatePlan: (productId: string, maxMoves: number) => Promise<{ plan: DistributionPlan; application: PlanApplication }>;
   writeDraft: (opportunityId: string) => Promise<ContributionDraftResult>;
   actionFabric?: DistributionActionFabric;
@@ -46,13 +47,25 @@ export class AutomationKernel {
     this.database.startAutomationRun(runId);
     try {
       const evidenceRefs = this.database.getProductContext(playbook.productId).evidence.map((item) => item.id);
-      const observeDecision = this.dependencies.actionFabric?.evaluate({
-        adapterId: "github-observer", capability: "observe", productId: playbook.productId,
-        evidenceRefs, purpose: "Refresh bounded public signals for this product.", budgetLimit: playbook.maxActionsPerRun,
-      });
-      if (observeDecision?.status === "blocked") throw new Error(observeDecision.reasons.join(" "));
-      currentStep = this.database.beginAutomationStep(runId, 1, "Observe connected sources", "Refreshing read-only sources. Candidates remain quarantined until founder review.");
       const connectors = this.database.getDashboard().connectors.filter((connector) => connector.productId === playbook.productId);
+      const devToConnection = this.database.getDevToConnection();
+      const devToConfigured = devToConnection.productId === playbook.productId && Boolean(devToConnection.signalQuery);
+      const observeSourceCount = connectors.length + (devToConfigured ? 1 : 0);
+      if (connectors.length > 0) {
+        const observeDecision = this.dependencies.actionFabric?.evaluate({
+          adapterId: "github-observer", capability: "observe", productId: playbook.productId,
+          evidenceRefs, purpose: "Refresh bounded GitHub signals for this product.", budgetLimit: playbook.maxActionsPerRun,
+        });
+        if (observeDecision?.status === "blocked") throw new Error(observeDecision.reasons.join(" "));
+      }
+      if (devToConfigured) {
+        const devToDecision = this.dependencies.actionFabric?.evaluate({
+          adapterId: "devto-observer", capability: "observe", productId: playbook.productId,
+          evidenceRefs, purpose: "Refresh bounded DEV article signals for this product.", budgetLimit: playbook.maxActionsPerRun,
+        });
+        if (devToDecision?.status === "blocked") throw new Error(devToDecision.reasons.join(" "));
+      }
+      currentStep = this.database.beginAutomationStep(runId, 1, "Observe connected sources", "Refreshing read-only sources. Candidates remain quarantined until founder review.");
       let importedCount = 0;
       let inspectedCount = 0;
       let failedSources = 0;
@@ -65,10 +78,19 @@ export class AutomationKernel {
           failedSources += 1;
         }
       }
+      if (devToConfigured && this.dependencies.syncDevToObserver) {
+        try {
+          const result = await this.dependencies.syncDevToObserver(playbook.productId);
+          importedCount += result.importedCount;
+          inspectedCount += result.inspectedCount;
+        } catch {
+          failedSources += 1;
+        }
+      }
       this.database.finishAutomationStep(
         currentStep,
-        failedSources === connectors.length && connectors.length > 0 ? "failed" : connectors.length ? "completed" : "skipped",
-        connectors.length
+        failedSources === observeSourceCount && observeSourceCount > 0 ? "failed" : observeSourceCount ? "completed" : "skipped",
+        observeSourceCount
           ? `${inspectedCount} bounded signal${inspectedCount === 1 ? "" : "s"} inspected; ${importedCount} candidate${importedCount === 1 ? "" : "s"} added for review${failedSources ? `; ${failedSources} source${failedSources === 1 ? "" : "s"} need attention` : ""}.`
           : "No read-only source connector is attached. Planning will use existing approved evidence.",
       );

@@ -1373,6 +1373,8 @@ export class DistributionDatabase {
 
   getActionAdapters(): ActionAdapterDescriptor[] {
     const connectedGitHub = Number((this.database.prepare("SELECT COUNT(*) AS count FROM source_connectors WHERE kind = 'github' AND status = 'connected'").get() as Row).count);
+    const devToConnection = this.getDevToConnection();
+    const devToConfigured = Boolean(devToConnection.signalQuery);
     const core: ActionAdapterDescriptor[] = [
       {
         id: "github-observer", name: "GitHub signal observer", version: "1.0.0",
@@ -1381,6 +1383,15 @@ export class DistributionDatabase {
         state: connectedGitHub ? "available" : "setup-required", publicSideEffect: false, origin: "core", configSummary: connectedGitHub ? `${connectedGitHub} connected source${connectedGitHub === 1 ? "" : "s"}` : "Connect a repository to activate",
         connection: { lastCheckedAt: "", lastError: "", credentialSource: connectedGitHub ? "environment" : "none", tools: connectedGitHub ? [
           { name: "sync-issues", description: "Read recent issue metadata into the quarantined Signal Inbox.", capabilities: ["observe", "search", "read"], risk: "read-only", publicSideEffect: false },
+        ] : [] },
+      },
+      {
+        id: "devto-observer", name: "DEV signal observer", version: "1.0.0",
+        description: "Reads bounded public article search results and quarantines candidates for review.", transport: "direct-api",
+        capabilities: ["observe", "search", "read"], risk: "read-only", approval: "none",
+        state: devToConfigured ? "available" : "setup-required", publicSideEffect: false, origin: "core", configSummary: devToConfigured ? `Search: ${devToConnection.signalQuery}` : "Connect a DEV search query to activate",
+        connection: { lastCheckedAt: devToConnection.lastSignalSyncAt, lastError: "", credentialSource: "none", tools: devToConfigured ? [
+          { name: "sync-articles", description: "Read bounded public DEV articles into the quarantined Signal Inbox.", capabilities: ["observe", "search", "read"], risk: "read-only", publicSideEffect: false },
         ] : [] },
       },
       {

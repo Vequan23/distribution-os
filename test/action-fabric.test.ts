@@ -96,6 +96,7 @@ test("configured adapters store only bounded manifests and reject arbitrary shel
     assert.equal(adapter.approval, "none");
     assert.equal(adapter.publicSideEffect, false);
     assert.equal(database.getActionAdapters().find((item) => item.id === "github-observer")?.state, "setup-required");
+    assert.equal(database.getActionAdapters().find((item) => item.id === "devto-observer")?.state, "setup-required");
     assert.doesNotMatch(JSON.stringify(database.getAutomationState()), /127\.0\.0\.1:3456\/mcp/);
   } finally {
     database.close();

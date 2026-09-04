@@ -95,6 +95,26 @@ test("read-only GitHub sync quarantines issues, filters pull requests, and dedup
   }
 });
 
+test("devto-observer activates when a bounded DEV search query is configured", () => {
+  const directory = mkdtempSync(join(tmpdir(), "distribution-os-devto-observer-"));
+  const database = new DistributionDatabase(directory);
+  try {
+    assert.equal(database.getActionAdapters().find((item) => item.id === "devto-observer")?.state, "setup-required");
+    const productId = database.onboardProduct({
+      name: "Signal Garden", description: "A governed distribution practice.", stage: "early",
+      audience: "Technical founders", objective: "Learn which channel earns replies", positioning: "Evidence before reach.", sources: [],
+    }, [{ type: "text", label: "Founder brief", sourceUrl: "", summary: "Technical founders need accountable distribution.", excerpt: "Technical founders need accountable distribution.", classification: "intent", confidence: 52 }]);
+    database.configureDevToConnection(productId, "technical founder distribution", ["opensource"]);
+    const adapter = database.getActionAdapters().find((item) => item.id === "devto-observer");
+    assert.equal(adapter?.state, "available");
+    assert.match(adapter?.configSummary ?? "", /technical founder distribution/i);
+    assert.equal(adapter?.connection.tools[0]?.name, "sync-articles");
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("GitHub sync treats a repository with no issues as an up-to-date source", async () => {
   const directory = mkdtempSync(join(tmpdir(), "distribution-os-github-empty-"));
   const database = new DistributionDatabase(directory);

@@ -50,6 +50,7 @@ const actionFabric = new DistributionActionFabric(database);
 const actionConnections = new ActionConnectionService(database, actionFabric);
 const automationKernel = new AutomationKernel(database, {
   syncConnector: async (id) => githubConnector.sync(id),
+  syncDevToObserver: async (productId) => devToConnector.syncSignals(productId),
   generatePlan: async (productId, maxMoves) => generateDistributionPlan(productId, modelExecutor, runtimeExecutor, aiControlPlane, database, { maxMoves }),
   writeDraft: async (opportunityId) => writeContributionDraft(opportunityId, modelExecutor, database),
   actionFabric,
